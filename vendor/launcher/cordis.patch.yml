@@ -1,0 +1,23 @@
+# dsh-comfyui-launcher bundle patch.
+#
+# 1) Inserts the launcher row: the comfyui_server tool, the /comfyui-launcher/*
+#    routes and the "ComfyUI 服务" Settings page.
+# 2) Points the already-installed dsh-comfyui plugin at your portable ComfyUI
+#    install, so the agent can locate its models, output and custom nodes
+#    without extra setup. A matching id-targeted entry replaces that row's
+#    complete config, so the fields dsh-comfyui needs are restated here.
+- insert:
+    - id: comfyui-launcher
+      name: 'dsh-comfyui-launcher'
+      config:
+        comfyuiDir: 'D:/dsh-video/a/ComfyUI'
+        pythonPath: 'D:/dsh-video/a/python_embeded/python.exe'
+        host: '127.0.0.1'
+        port: 8188
+        autoStart: false
+- id: comfyui
+  config:
+    baseUrl: 'http://127.0.0.1:8188'
+    comfyuiDirs:
+      - 'D:/dsh-video/a/ComfyUI'
+    outputDir: 'D:/dsh-video/a/ComfyUI/output'

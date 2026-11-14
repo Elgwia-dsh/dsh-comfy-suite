@@ -1,0 +1,73 @@
+# dsh-comfy-suite bundle patch —— 一个条目装三件事。
+#
+# 旧的三条 bundle patch（dsh-comfyui / dsh-comfyui-launcher / dsh-qwen-paint）
+# 已经并入这里：comfyui 块的字段原先由 launcher 的 patch 覆盖，launcher 块是
+# 启动器自己的配置，qwenPaint 块是千问出图的优化档。
+#
+# 改配置就在这一层改；升级本包不会覆盖它。\n#\n# 注意：下面三块里的路径是示例（作者环境的一种便携版布局），装到别的机器上请改成\n# 你自己的 ComfyUI 安装目录，否则启停与出图都会找不到文件。
+- insert:
+    - id: comfy-suite
+      name: 'dsh-comfy-suite'
+      config:
+        # ── 工作流驱动（原 dsh-comfyui）──────────────────────────────────
+        comfyui:
+          baseUrl: 'http://127.0.0.1:8188'
+          comfyuiDirs:
+            - 'D:/dsh-video/a/ComfyUI'
+          outputDir: 'D:/dsh-video/a/ComfyUI/output'
+        # ── 服务启停（原 dsh-comfyui-launcher）──────────────────────────
+        launcher:
+          comfyuiDir: 'D:/dsh-video/a/ComfyUI'
+          pythonPath: 'D:/dsh-video/a/python_embeded/python.exe'
+          host: '127.0.0.1'
+          port: 8188
+          autoStart: false
+        # ── 千问本地出图（原 dsh-qwen-paint）────────────────────────────
+        qwenPaint:
+          comfyUrl: 'http://127.0.0.1:8188'
+          comfyPython: 'D:\dsh-video\a\python_embeded\python.exe'
+          comfyMainPy: 'D:\dsh-video\a\ComfyUI\main.py'
+          comfyWorkdir: 'D:\dsh-video\a'
+          accelAutoInstall: false
+          timeoutMs: 300000
+          resolution: 1024
+          # 主模型：turbo 蒸馏版 GGUF（作者环境实测）。自带蒸馏，所以不再叠 turbo8 LoRA。
+          unet: 'Qwen-Image-2.1-Turbo-AD-Q6_K.gguf'
+          turboBakedModel: true
+          # GGUF 加载：advanced + target 反量化 —— 实测 37.6 s（default/fp32 要 155 s）
+          ggufLoader: advanced
+          ggufDequantDtype: target
+          ggufPatchDtype: target
+          ggufPatchOnDevice: true
+          # 采样引擎：turbo9 = 9 步显式 sigma 表（2026-11-12 起默认，借鉴 9 步整合画布）；
+          # ksimple = 老链路（KSampler + scheduler:simple + ModelSamplingFlux），留作对照。
+          samplingProfile: turbo9
+          # 想试别的步序就填一串 sigma（逗号分隔、最后一位必须 0），留空用内置 9 步表。
+          manualSigmas: ''
+          manualSigmasSteps: 9
+          manualSigmasSampler: euler
+          # 扩图成图长边上限（实际取 max(它, 原图 1.5 倍)；超了只收敛留白，不缩原图）。
+          outpaintMaxEdge: 2048
+          steps: 8
+          forceTurbo8Steps: true
+          forceOptimizedSize: false
+          imageBackend: 'comfyui'
+          hipfireExe: ''
+          hipfireTransport: 'auto'
+          hipfireUrl: 'http://127.0.0.1:11580'
+          hipfireTimeoutMs: 600000
+          hipfireBackend: 'gpu'
+          hipfirePrecheckModel: true
+          blockCacheEnabled: true
+          wrapperPolicy: auto
+          wrapperAutoTokensThreshold: 16384
+          blockCacheThreshold: 0.03
+          blockCacheStartPercent: 0.1
+          blockCacheEndPercent: 0.9
+          blockCacheMaxHits: 2
+          blockCacheDevice: 'cpu'
+          blockCacheMetricStride: 8
+          blockCacheMaxMb: 1024
+          blockCacheThresholdMode: 'two_stage'
+          blockCacheSplitRatio: 0.35
+          blockCacheLateThreshold: 0.15

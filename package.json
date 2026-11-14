@@ -1,0 +1,89 @@
+{
+  "name": "dsh-comfy-suite",
+  "version": "1.6.0",
+  "type": "module",
+  "description": "ComfyUI 一站式套件：工作流库（图工作流提取 / 加载区 / 技能包）+ 本地出图修图（draw / inpaint / outpaint / character / upscale，9 步 turbo9）+ 服务启停 + 作品库/风格库/提示词衣柜，14 个工具一个设置页；面板标题栏带实时进度条（WebSocket 驱动：正在生成 / 步数 / ETA / 队列深度）。",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "comfyui",
+    "qwen-image",
+    "image-generation",
+    "launcher"
+  ],
+  "license": "MIT",
+  "author": "dsh-comfy-suite contributors",
+  "homepage": "https://github.com/Elgwia-dsh/dsh-comfy-suite#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Elgwia-dsh/dsh-comfy-suite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Elgwia-dsh/dsh-comfy-suite/issues"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "build:client": "node scripts/build-client.mjs",
+    "check:client": "node scripts/build-client.mjs --check",
+    "test:host": "node test-host.mjs",
+    "test:client": "node test-client.mjs",
+    "test:gallery": "node test-gallery.mjs",
+    "test:routes": "node test-routes.mjs",
+    "test:launch": "node test-launch.mjs",
+    "test:sampling": "node test-sampling.mjs",
+    "test:outpaint": "node test-outpaint.mjs",
+    "test": "node test-host.mjs && node test-gallery.mjs && node test-wardrobe.mjs && node test-sampling.mjs && node test-outpaint.mjs && node test-library.mjs && node test-inpaint.mjs && node test-upstream.mjs && node test-fixes.mjs && node test-comfyui.mjs && node test-routes.mjs && node test-client.mjs && node test-launch.mjs && node scripts/build-client.mjs --check",
+    "test:wardrobe": "node test-wardrobe.mjs",
+    "test:library": "node test-library.mjs",
+    "test:inpaint": "node test-inpaint.mjs",
+    "test:upstream": "node test-upstream.mjs",
+    "test:fixes": "node test-fixes.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "vendor",
+    "scripts",
+    "node_modules",
+    "cordis.patch.yml",
+    "install.sh",
+    "rollback.sh",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
+    "README.md"
+  ],
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.2.1-rc.5 <0.3.0-0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "fflate": "^0.8.2"
+  },
+  "//": "本包自带 node_modules（schemastery 84 KB + 它缺的 @deepseek-ai/cosmokit 119 KB + fflate 833 KB），所以物理目录安装与 link 安装都能解析：不再依赖宿主把 node_modules 留在 profile 前缀里（实测：只 vendored schemastery 时，物理目录安装会报 Cannot find package '@deepseek-ai/cosmokit'）。",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}

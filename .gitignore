@@ -1,0 +1,18 @@
+# 本机备份与运行产物
+*.bak
+*.bak-*
+*.corrupt-*
+*.log
+boot.log
+.run/
+trash/
+
+# 编辑器与系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# 注意：node_modules/ 是故意提交的（vendored schemastery + cosmokit + fflate）。
+# 忽略它会让 link 与物理复制两种安装方式都无法解析依赖，见 README「自带依赖」。

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ComfyUI Launcher",
+    "description": "Starts, stops and inspects the portable ComfyUI configured in the suite settings, and points dsh-comfyui at that install."
+  }
+}

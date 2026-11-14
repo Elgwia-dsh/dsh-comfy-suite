@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ComfyUI 启动器",
+    "description": "从 DSH 启动、停止并查看配置里指定的便携版 ComfyUI，同时把 dsh-comfyui 指向该安装目录。"
+  }
+}

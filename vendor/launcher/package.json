@@ -1,0 +1,42 @@
+{
+  "name": "dsh-comfyui-launcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Starts, stops and reports the portable ComfyUI configured for DSH, and points dsh-comfyui at that install. / 从 DSH 启动、停止并查看配置里指定的便携版 ComfyUI，同时把 dsh-comfyui 指向该安装目录。",
+  "keywords": [
+    "deepseek",
+    "harness",
+    "dsh",
+    "dsh-plugin",
+    "comfyui",
+    "launcher"
+  ],
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
