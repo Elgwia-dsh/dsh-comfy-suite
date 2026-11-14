@@ -53,7 +53,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/Elgwia-dsh/dsh-comfy-suite",
-            "commit": "102d34abacf16968d13ac13307b5d14cde47c7e6"
+            "commit": "bd3f71783ea8c9e3a685ba4dd5170c1d1474bc80"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.5 <0.3.0-0"
