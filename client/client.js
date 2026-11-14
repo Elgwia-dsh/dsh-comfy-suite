@@ -5770,7 +5770,7 @@ __dshSuiteRegister({
                 appearance: 'none',
                 border: primary ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
                 background: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-                color: primary ? '#ffffff' : 'var(--dsw-alias-label-primary)',
+                color: primary ? 'var(--dsw-alias-label-primary-foreground)' : 'var(--dsw-alias-label-primary)',
                 borderRadius: '8px',
                 padding: '6px 14px',
                 font: 'inherit',
@@ -9990,7 +9990,7 @@ __dshSuiteRegister({
             sub: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' },
             bar: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' },
             input: {
-                flex: '1 1 240px', minWidth: '160px', boxSizing: 'border-box',
+                width: '100%', boxSizing: 'border-box',
                 padding: '7px 10px', fontSize: '13px', lineHeight: '18px',
                 color: 'var(--dsw-alias-label-primary)',
                 background: 'var(--dsw-alias-bg-layer-1)',
@@ -10009,14 +10009,14 @@ __dshSuiteRegister({
                 borderRadius: '999px',
                 border: `1px solid ${active ? 'transparent' : 'var(--dsw-alias-border-l1)'}`,
                 background: active ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-                color: active ? '#fff' : 'var(--dsw-alias-label-secondary)',
+                color: active ? 'var(--dsw-alias-label-primary-foreground)' : 'var(--dsw-alias-label-secondary)',
             }),
             button: (primary) => ({
                 padding: '6px 12px', fontSize: '12px', lineHeight: '18px', cursor: 'pointer',
                 borderRadius: '8px',
                 border: primary ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
                 background: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-                color: primary ? '#fff' : 'var(--dsw-alias-label-primary)',
+                color: primary ? 'var(--dsw-alias-label-primary-foreground)' : 'var(--dsw-alias-label-primary)',
             }),
             stats: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
             error: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' },
@@ -10182,7 +10182,7 @@ __dshSuiteRegister({
 
             const bar = h('div', { style: S.bar },
                 h('input', {
-                    style: S.input,
+                    style: { ...S.input, flex: '1 1 240px', minWidth: '160px', width: 'auto' },
                     value: query,
                     placeholder: L.searchPlaceholder,
                     onChange: (event) => setQuery(event.target.value),
@@ -10621,7 +10621,7 @@ __dshSuiteRegister({
                     scenes.map((entry) => h('option', { key: entry.id, value: entry.id }, `${entry.zh}（L${entry.level}）`))),
                     h('span', { style: S.stats }, L.seed),
                     h('input', {
-                        style: { ...S.input, flex: '0 1 220px' },
+                        style: { ...S.input, flex: '0 1 220px', width: 'auto' },
                         value: seedText,
                         placeholder: L.seedPlaceholder,
                         onChange: (event) => setSeedText(event.target.value),

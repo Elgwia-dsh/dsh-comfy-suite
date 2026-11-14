@@ -102,7 +102,7 @@ window.__ModuleLoader__.load({
                 appearance: 'none',
                 border: primary ? '1px solid transparent' : '1px solid var(--dsw-alias-border-l1)',
                 background: primary ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-bg-layer-1)',
-                color: primary ? '#ffffff' : 'var(--dsw-alias-label-primary)',
+                color: primary ? 'var(--dsw-alias-label-primary-foreground)' : 'var(--dsw-alias-label-primary)',
                 borderRadius: '8px',
                 padding: '6px 14px',
                 font: 'inherit',
