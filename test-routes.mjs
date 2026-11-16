@@ -98,7 +98,9 @@ function makeCtx(label) {
 }
 
 suite.apply(makeCtx('suite'), {
-    comfyui: { baseUrl: 'http://127.0.0.1:8188', outputDir: workflowDir, dataDir: join(home, 'comfyui-data') },
+    // 65530 上永远没有服务：/comfyui/test 的离线分支才能确定性地被测到。
+    // （不能用 1：WHATWG fetch 把它当"禁用端口"，报的是 bad port 而不是 ECONNREFUSED。）
+    comfyui: { baseUrl: 'http://127.0.0.1:65530', outputDir: workflowDir, dataDir: join(home, 'comfyui-data') },
     launcher: { port: 8188 },
     qwenPaint: { outputDir: outDir },
 });
@@ -302,7 +304,21 @@ assert.ok(composed.json.negative.length > 0);
 assert.equal(composed.json.prompt.includes('低分辨率'), false);
 console.log('ok - GET /presets and POST /presets/compose work end to end');
 
-/* --------------------------------------------------------- 9. 同源守卫 ---- */
+/* ------------------------------------------- 9. 离线探测（/comfyui/test）---- */
+// 2026-11-17：ComfyUI 没启动时点开面板，客户端要能拿到结构化的「未启动」判定，
+// 而不是只有一句 fetch failed（那会被渲染成页面顶部的红色错误条）。
+const probeResponse = await invoke('/comfyui/test', { method: 'POST', headers: json(), body: {} });
+assert.equal(probeResponse.statusCode, 200);
+const probe = probeResponse.json;
+assert.equal(probe.ok, false, 'a closed port must not report ok');
+assert.equal(probe.offline, true, 'ECONNREFUSED must be classified as offline');
+assert.equal(probe.code, 'ECONNREFUSED');
+assert.equal(probe.baseUrl, 'http://127.0.0.1:65530', 'the probed address must come back to the client');
+assert.ok(typeof probe.reason === 'string' && probe.reason.length > 0, 'probe reason is missing');
+assert.ok(probe.error.includes('探测地址'), 'legacy error text lost the probed address');
+console.log('ok - /comfyui/test classifies a closed port as offline (ECONNREFUSED)');
+
+/* --------------------------------------------------------- 10. 同源守卫 ---- */
 const crossSite = await invoke('/api/comfy-suite/gallery/favorite', {
     method: 'POST',
     headers: { ...json(), origin: 'http://evil.example.com' },

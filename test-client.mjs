@@ -301,4 +301,70 @@ for (const needle of ['实时进度', '工作流', '作品库']) {
 }
 console.log(`rendered plugin introduction: ${aboutList.length} bullets`);
 
+// ── 离线：ComfyUI 没启动时点开面板，不能报错、不能把面板关掉 ──────────────
+// 2026-11-17 报的真 bug：探测失败会 panelStore.close()，并在页面顶部弹一条
+// 「后端未能连上 ComfyUI（fetch failed…）」的错误条。修复后：面板保持打开，
+// 面板内出现「ComfyUI 未启动 + 启动服务」的温和提示，且不外泄原始传输错误。
+const { ConnectionBanner, connection } = internals;
+if (typeof ConnectionBanner !== 'function' || !connection) throw new Error('connection surface missing');
+connection.reset();
+internals.panelStore.open();
+sandbox.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+        ok: false,
+        offline: true,
+        code: 'ECONNREFUSED',
+        baseUrl: 'http://127.0.0.1:8188',
+        error: 'fetch failed（探测地址 http://127.0.0.1:8188）',
+    }),
+});
+await connection.probe({ force: true });
+const verdict = connection.state();
+if (verdict.status !== 'fail' || verdict.offline !== true) {
+    throw new Error(`offline probe was not classified as offline: ${JSON.stringify(verdict)}`);
+}
+if (!internals.panelStore.isOpen()) throw new Error('a failed probe closed the panel — the reported bug is back');
+const banner = ConnectionBanner({ t });
+if (!banner || banner.type !== 'div') throw new Error('offline banner did not render');
+const bannerText = JSON.stringify(banner);
+for (const needle of ['ComfyUI 未启动', '启动服务', '127.0.0.1:8188']) {
+    if (!bannerText.includes(needle)) throw new Error(`offline banner lost "${needle}"`);
+}
+if (bannerText.includes('fetch failed')) throw new Error('offline banner leaks the raw transport error');
+console.log('rendered offline banner: ComfyUI 未启动 · 启动服务 · 地址');
+
+const offlinePanel = renderTree(Panel({ t }));
+const offlinePanelText = JSON.stringify(offlinePanel);
+if (offlinePanelText.includes('fetch failed')) throw new Error('panel leaks "fetch failed" while offline');
+if (!offlinePanelText.includes('ComfyUI 未启动')) throw new Error('panel is missing the offline banner');
+console.log('panel stays open with the offline banner');
+
+// 探测成功：横幅消失，面板照常。
+sandbox.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, version: '0.3.x', latencyMs: 12 }) });
+await connection.probe({ force: true });
+if (connection.state().status !== 'hidden') throw new Error('healthy probe did not clear the banner');
+console.log('healthy probe clears the banner');
+
+// 老宿主只回 `{ok:false,error:'fetch failed（探测地址 …）'}`（改动要等宿主重启才生效）。
+// 客户端必须自己认出这是"没启动"，并且把地址捞出来、别把 fetch failed 印发给用户。
+connection.reset();
+sandbox.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ ok: false, error: 'fetch failed（探测地址 http://127.0.0.1:8188）' }),
+});
+await connection.probe({ force: true });
+const legacy = connection.state();
+if (legacy.offline !== true) throw new Error('legacy payload was not recognised as offline');
+if (legacy.address !== 'http://127.0.0.1:8188') throw new Error(`legacy address not recovered: ${legacy.address}`);
+const legacyBanner = JSON.stringify(ConnectionBanner({ t }));
+if (legacyBanner.includes('fetch failed')) throw new Error('legacy payload leaks the raw transport error');
+if (!legacyBanner.includes('127.0.0.1:8188')) throw new Error('legacy banner lost the probed address');
+console.log('legacy host payload still renders the offline banner');
+connection.reset();
+
+internals.panelStore.close();
+
 void disposed;

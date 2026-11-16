@@ -6,6 +6,39 @@ import { MAX_IMPORT_BYTES, analyzeImportPackage, applyImportPackage, buildExport
 import { unlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+/** Socket-level failure codes that mean "nothing is listening there". */
+const OFFLINE_CODES = new Set([
+    'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND',
+    'EAI_AGAIN', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET',
+]);
+/**
+ * Classify a failed connection probe.
+ *
+ * `fetch failed` says nothing a user can act on; the socket code underneath
+ * does. `offline` marks the everyday case — the port is closed or the host is
+ * unreachable, i.e. ComfyUI is not running — which the client renders as a calm
+ * "not started" banner instead of an error. A real fault (401, 404, TLS) keeps
+ * `offline: false` and its own message.
+ */
+function classifyConnectFailure(error) {
+    const codes = [];
+    const collect = (value) => {
+        if (value === null || typeof value !== 'object')
+            return;
+        if (typeof value.code === 'string' && value.code !== '')
+            codes.push(value.code);
+        if (Array.isArray(value.errors))
+            for (const inner of value.errors)
+                collect(inner);
+    };
+    collect(error !== null && typeof error === 'object' ? error.cause : undefined);
+    collect(error);
+    const offlineCode = codes.find((code) => OFFLINE_CODES.has(code)) ?? '';
+    return {
+        offline: offlineCode !== '',
+        code: offlineCode !== '' ? offlineCode : (codes[0] ?? ''),
+    };
+}
 /**
  * Rebuild an asset's media URLs from the stored file references.
  *
@@ -288,9 +321,21 @@ export function mountComfyUIRoutes(ctx, runtime) {
                 // Name the probed address: a save that never persisted leaves the
                 // default 127.0.0.1:8188 in force, and a bare "fetch failed" reads
                 // like a network problem with the address the user typed (Issue #11).
+                //
+                // 2026-11-17: also classify the failure. `fetch failed` is transport
+                // jargon, and the everyday case — the port is closed because ComfyUI
+                // is not running — was rendered as a red error on panel open. The
+                // client now uses `offline`/`code` to say "not started" and offer the
+                // launcher, while a real fault (401, wrong path) keeps its own text.
+                const failure = classifyConnectFailure(error);
+                const baseUrl = runtime.getConfig().baseUrl;
                 sendJson(response, 200, {
                     ok: false,
-                    error: `${errorMessage(error)}（探测地址 ${runtime.getConfig().baseUrl}）`,
+                    offline: failure.offline,
+                    code: failure.code,
+                    reason: errorMessage(error),
+                    error: `${errorMessage(error)}（探测地址 ${baseUrl}）`,
+                    baseUrl,
                     latencyMs: Date.now() - startedAt,
                 });
             }

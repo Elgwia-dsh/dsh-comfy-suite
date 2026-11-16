@@ -97,8 +97,19 @@ __dshSuiteRegister({
 			ours: "本插件",
 			connChecking: "正在检测 ComfyUI 连接…",
 			connOk: "连接正常 · ComfyUI {version} · {ms} ms",
-			connFailTitle: "无法连接 ComfyUI",
-			connFailBody: "后端未能连上 ComfyUI（{message}）。请先启动本机 ComfyUI，确保后端能检测到其端口；若使用远程服务器，请到设置页检查服务器地址并点「测试连接」。",
+			connOfflineTitle: "ComfyUI 未启动",
+			connOfflineBody: "{address} 没有响应。工作流库、作品库照常可用；启动服务后即可生成。",
+			connErrorTitle: "无法连接 ComfyUI",
+			connErrorBody: "后端连不上 {address}：{message}。若是远程服务器，请到 设置 → ComfyUI 套件 检查服务器地址。",
+			connStart: "启动服务",
+			connStarting: "正在启动 ComfyUI…",
+			connStartHint: "首次启动约 30–60 秒，就绪后这条提示会自动消失。",
+			connRetry: "重新检测",
+			connStartFailed: "启动失败：{message}",
+			liveOfflineDown: "ComfyUI 未启动",
+			wfComfyuiOffline: "ComfyUI 未启动，启动后这里会列出服务端保存的工作流。",
+			queueOffline: "ComfyUI 未启动，队列里还没有任务。",
+			testFailOffline: "连接失败：{address} 没有响应（ComfyUI 可能未启动）",
 			wfAdd: "新建工作流",
 			wfName: "名称",
 			wfDesc: "概述",
@@ -388,8 +399,19 @@ __dshSuiteRegister({
 			ours: "ours",
 			connChecking: "Checking the ComfyUI connection…",
 			connOk: "Connected · ComfyUI {version} · {ms} ms",
-			connFailTitle: "Cannot reach ComfyUI",
-			connFailBody: "The backend could not reach ComfyUI ({message}). Start the local ComfyUI and make sure the backend can see its port; for a remote server, check the URL in settings and run \"Test connection\".",
+			connOfflineTitle: "ComfyUI is not running",
+			connOfflineBody: "{address} is not answering. The workflow library and the gallery still work; start the service to generate.",
+			connErrorTitle: "Cannot reach ComfyUI",
+			connErrorBody: "The backend cannot reach {address}: {message}. For a remote server, check the URL in Settings → ComfyUI Suite.",
+			connStart: "Start service",
+			connStarting: "Starting ComfyUI…",
+			connStartHint: "The first start takes about 30–60 seconds; this banner disappears once it is ready.",
+			connRetry: "Check again",
+			connStartFailed: "Start failed: {message}",
+			liveOfflineDown: "ComfyUI not running",
+			wfComfyuiOffline: "ComfyUI is not running; start it to list the workflows saved on the server.",
+			queueOffline: "ComfyUI is not running, so the queue is empty.",
+			testFailOffline: "Connection failed: {address} is not answering (ComfyUI may not be running)",
 			wfAdd: "New workflow",
 			wfName: "Name",
 			wfDesc: "Overview",
@@ -1096,9 +1118,15 @@ __dshSuiteRegister({
 							ms: payload.latencyMs ?? 0
 						})
 					});
+					else if (payload.offline === true) setTestResult({
+						ok: false,
+						text: t("testFailOffline", {
+							address: typeof payload.baseUrl === "string" && payload.baseUrl !== "" ? payload.baseUrl : "ComfyUI"
+						})
+					});
 					else setTestResult({
 						ok: false,
-						text: t("testFail", { message: payload.error ?? "unknown error" })
+						text: t("testFail", { message: payload.reason ?? payload.error ?? "unknown error" })
 					});
 				} catch (error) {
 					setTestResult({
@@ -1262,25 +1290,23 @@ __dshSuiteRegister({
 		//#endregion
 		//#region src/client/connection.tsx
 		/**
-		* Connection probe + reminder toast. Opening the panel used to give zero
-		* feedback when ComfyUI was down: the workflows/queue tabs just stayed empty
-		* with no explanation. The header trigger now fires a real backend probe
-		* (POST /comfyui/test → the host connects to the configured ComfyUI server —
-		* local port or remote URL alike); when it fails, the panel closes again —
-		* the trigger must not stay highlighted against a dead backend — and a fixed
-		* toast at the top of the page tells the user to start ComfyUI or fix the
-		* server address. The probe never blocks the panel: it opens immediately,
-		* the toast settles whenever the probe answers.
+		* Connection state shared by the header trigger, the panel and its tabs.
+		*
+		* Opening the panel fires one probe through the host (`POST /comfyui/test`
+		* → the host connects to the configured ComfyUI server — local port or
+		* remote URL alike). The panel opens immediately and stays open either way:
+		* its workflow library, its assets and the settings page are local, so a
+		* dead backend is no reason to swallow the click. A failed probe paints a
+		* calm inline banner inside the panel ("ComfyUI 未启动" + 启动服务), never a
+		* page-level error toast and never the raw transport text ("fetch failed").
 		*/
 		const listeners = /* @__PURE__ */ new Set();
+		/** hidden (healthy) | fail (banner shown). */
 		let state = { status: "hidden" };
 		/** Dedupe concurrent probes (rapid trigger clicks). */
 		let inFlight = null;
 		/** Skip re-probing while a "connected" verdict is still fresh. */
 		let lastOkAt = 0;
-		/** The ok toast only shows on fail→ok transitions, never on healthy opens. */
-		let hadFailure = false;
-		let okHideTimer = null;
 		function emit() {
 			for (const listener of listeners) listener();
 		}
@@ -1288,66 +1314,71 @@ __dshSuiteRegister({
 			state = next;
 			emit();
 		}
-		function clearOkTimer() {
-			if (okHideTimer !== null) {
-				clearTimeout(okHideTimer);
-				okHideTimer = null;
-			}
-		}
-		/** Close button on the toast; also ends the transient ok feedback early. */
-		function dismissConnectionToast() {
-			clearOkTimer();
-			if (state.status !== "hidden") setState({ status: "hidden" });
+		/**
+		* Normalise a failed probe into banner state.
+		*
+		* `offline` is the host's socket-level verdict (ECONNREFUSED and friends):
+		* the everyday "ComfyUI is not running" case, which gets a calm,
+		* actionable message. Anything else (401, wrong path, TLS) keeps its own
+		* reason so the user can fix the address or the key.
+		*/
+		function failureState(payload, error) {
+			const detail = payload !== null && typeof payload === "object" ? payload : {};
+			const raw = typeof detail.reason === "string" && detail.reason !== "" ? detail.reason : typeof detail.error === "string" && detail.error !== "" ? detail.error : error instanceof Error ? error.message : String(error ?? "");
+			// Older hosts answered with the transport text plus the probed address;
+			// the banner names the address itself, so move it out of the message
+			// (and keep it as the address when the host did not send `baseUrl`).
+			const legacyAddress = (raw.match(/（探测地址\s*([^）]*?)）/)?.[1] ?? "").trim();
+			const message = raw.replace(/（探测地址[^）]*）/g, "").trim();
+			// A host too old to send `offline` still reports "fetch failed" /
+			// "connect ECONNREFUSED"; never echo that as an error the user should
+			// act on — it means the same thing: nothing is listening.
+			const transport = detail.offline === void 0 && /^(fetch failed|connect E[A-Z]+|getaddrinfo ENOTFOUND|connect ECONNREFUSED)/i.test(message);
+			return {
+				status: "fail",
+				offline: detail.offline === true || transport,
+				address: typeof detail.baseUrl === "string" && detail.baseUrl !== "" ? detail.baseUrl : legacyAddress,
+				code: typeof detail.code === "string" ? detail.code : "",
+				message
+			};
 		}
 		/**
-		* Probe the ComfyUI server through the host and surface the result as toast
-		* state. A success within the last 30s skips the round-trip entirely, so
-		* healthy repeated panel opens do not hammer the server; failures always
-		* re-probe on the next open (the user may have just started ComfyUI).
+		* Probe the ComfyUI server through the host and store the verdict.
+		*
+		* A success within the last 30s skips the round-trip entirely, so healthy
+		* repeated panel opens do not hammer the server; a failure always re-probes
+		* on the next open (the user may have just started ComfyUI). `force` skips
+		* the freshness window — that is what the banner's 重新检测 button uses.
 		*/
-		function probeConnection() {
+		function probeConnection(options) {
+			const force = options !== void 0 && options.force === true;
 			if (inFlight !== null) return inFlight;
-			if (Date.now() - lastOkAt < 3e4) return Promise.resolve();
-			if (state.status !== "fail") {
-				clearOkTimer();
-				setState({ status: "probing" });
-			}
+			if (!force && Date.now() - lastOkAt < 3e4) return Promise.resolve();
+			// Keep the previous verdict on screen while re-probing: the banner must
+			// not blink out (and the panel must not jump) on every open.
 			inFlight = (async () => {
 				try {
 					const payload = await postJson("/comfyui/test", {});
 					if (payload.ok === true) {
 						lastOkAt = Date.now();
-						const recovered = hadFailure;
-						hadFailure = false;
-						if (recovered) {
-							setState({
-								status: "ok",
-								version: payload.version,
-								latencyMs: payload.latencyMs
-							});
-							clearOkTimer();
-							okHideTimer = setTimeout(dismissConnectionToast, 4e3);
-						} else setState({ status: "hidden" });
-					} else {
-						hadFailure = true;
-						setState({
-							status: "fail",
-							message: payload.error ?? "unknown error"
-						});
-						panelStore.close();
-					}
+						setState({ status: "hidden" });
+					} else setState(failureState(payload, null));
 				} catch (error) {
-					hadFailure = true;
-					setState({
-						status: "fail",
-						message: error instanceof Error ? error.message : String(error)
-					});
-					panelStore.close();
+					setState(failureState(null, error));
 				} finally {
 					inFlight = null;
 				}
 			})();
 			return inFlight;
+		}
+		/** Trust a just-started server: the launcher only answers ok once the port is up. */
+		function markConnected() {
+			lastOkAt = Date.now();
+			setState({ status: "hidden" });
+		}
+		/** React hook reading the connection verdict. */
+		function useConnState() {
+			return (0, react.useSyncExternalStore)(subscribe, getConnState, getConnState);
 		}
 		function getConnState() {
 			return state;
@@ -1358,34 +1389,74 @@ __dshSuiteRegister({
 				listeners.delete(listener);
 			};
 		}
-		/** Fixed top-center status toast; mounted next to the header trigger so it
-		* renders (and can be dismissed) even when the panel is closed again. The
-		* probing variant fades in after a short CSS delay, so a fast successful
-		* probe never paints anything. */
-		function ConnectionToast({ t }) {
-			const conn = (0, react.useSyncExternalStore)(subscribe, getConnState, getConnState);
-			if (conn.status === "hidden") return null;
+		/**
+		* Inline connection banner inside the panel (under the live strip).
+		*
+		* Offline is the common case — ComfyUI simply is not running — so this
+		* reads as a calm status line with a "start the service" action, not as an
+		* error. The panel behind it stays usable: workflows and assets are local.
+		*/
+		function ConnectionBanner({ t }) {
+			const conn = useConnState();
+			const [starting, setStarting] = (0, react.useState)(false);
+			const [retrying, setRetrying] = (0, react.useState)(false);
+			const [startError, setStartError] = (0, react.useState)(null);
+			if (conn.status !== "fail") return null;
+			const address = conn.address !== "" ? conn.address : "ComfyUI";
+			const start = async () => {
+				if (starting || retrying) return;
+				setStarting(true);
+				setStartError(null);
+				try {
+					const payload = await postJson("/comfyui-launcher/start", {});
+					if (payload.ok !== true) throw new Error(typeof payload.error === "string" && payload.error !== "" ? payload.error : "start failed");
+					markConnected();
+				} catch (error) {
+					setStartError(error instanceof Error ? error.message : String(error));
+				} finally {
+					setStarting(false);
+				}
+			};
+			const retry = async () => {
+				if (starting || retrying) return;
+				setRetrying(true);
+				setStartError(null);
+				try {
+					await probeConnection({ force: true });
+				} finally {
+					setRetrying(false);
+				}
+			};
+			const title = starting ? t("connStarting") : conn.offline ? t("connOfflineTitle") : t("connErrorTitle");
+			const text = starting ? t("connStartHint") : conn.offline ? t("connOfflineBody", { address }) : t("connErrorBody", {
+				address,
+				message: conn.message
+			});
 			return (0, react.createElement)("div", {
-				className: `dsc-conn-toast dsc-conn-toast--${conn.status}`,
+				className: `dsc-conn${conn.offline ? " dsc-conn--off" : " dsc-conn--fail"}`,
 				role: "status"
 			}, (0, react.createElement)("span", {
-				className: "dsc-conn-toast-dot",
+				className: "dsc-conn-dot",
 				"aria-hidden": true
-			}), (0, react.createElement)("div", { className: "dsc-conn-toast-body" }, conn.status === "fail" ? (0, react.createElement)("div", { className: "dsc-conn-toast-body-inner" }, (0, react.createElement)("div", { className: "dsc-conn-toast-title" }, t("connFailTitle")), (0, react.createElement)("div", { className: "dsc-conn-toast-text" }, t("connFailBody", { message: conn.message ?? "" }))) : (0, react.createElement)("div", { className: "dsc-conn-toast-title" }, conn.status === "probing" ? t("connChecking") : t("connOk", {
-				version: conn.version ?? "unknown",
-				ms: conn.latencyMs ?? 0
-			}))), (0, react.createElement)("button", {
-				className: "dsc-conn-toast-close",
-				"aria-label": t("close"),
-				onClick: dismissConnectionToast
-			}, "✕"));
+			}), (0, react.createElement)("div", { className: "dsc-conn-body" }, (0, react.createElement)("div", { className: "dsc-conn-title" }, title), (0, react.createElement)("div", { className: "dsc-conn-text" }, text), startError !== null ? (0, react.createElement)("div", { className: "dsc-conn-error" }, t("connStartFailed", { message: startError })) : null, (0, react.createElement)("div", { className: "dsc-conn-actions" }, (0, react.createElement)("button", {
+				className: "dsc-btn",
+				type: "button",
+				disabled: starting || retrying,
+				onClick: start
+			}, starting ? t("connStarting") : t("connStart")), (0, react.createElement)("button", {
+				className: "dsc-btn",
+				type: "button",
+				disabled: starting || retrying,
+				onClick: retry
+			}, retrying ? t("connChecking") : t("connRetry")))));
 		}
 		//#endregion
 		//#region src/client/trigger.tsx
 		/**
 		* The session-header trigger (conversation.session.header.actions, id
-		* 'comfyui'): a labelled button that toggles the ComfyUI panel, plus the
-		* connection reminder toast shown when the backend cannot reach ComfyUI.
+		* 'comfyui'): a labelled button that toggles the ComfyUI panel and fires
+		* one connection probe on open. The verdict is painted inside the panel
+		* (ConnectionBanner), not as a page-level toast.
 		*/
 		/**
 		* ComfyUI brand glyph (mono), inlined from @lobehub/icons-static-svg
@@ -1406,11 +1477,11 @@ __dshSuiteRegister({
 			}, (0, react.createElement)("path", { d: "M5.485 23.76c-.568 0-1.026-.207-1.325-.598-.307-.402-.387-.964-.22-1.54l.672-2.315a.605.605 0 00-.1-.536.622.622 0 00-.494-.243H2.085c-.568 0-1.026-.207-1.325-.598-.307-.403-.387-.964-.22-1.54l2.31-7.917.255-.87c.343-1.18 1.592-2.14 2.786-2.14h2.313c.276 0 .519-.18.595-.442l.764-2.633C9.906 1.208 11.155.249 12.35.249l4.945-.008h3.62c.568 0 1.027.206 1.325.597.307.402.387.964.22 1.54l-1.035 3.566c-.343 1.178-1.593 2.137-2.787 2.137l-4.956.01H11.37a.618.618 0 00-.594.441l-1.928 6.604a.605.605 0 00.1.537c.118.153.3.243.495.243l3.275-.006h3.61c.568 0 1.026.206 1.325.598.307.402.387.964.22 1.54l-1.036 3.565c-.342 1.179-1.592 2.138-2.786 2.138l-4.957.01h-3.61z" }));
 		}
 		/** Header-action button toggling the ComfyUI panel. Opening it also fires a
-		* backend connectivity probe: when ComfyUI is down, a reminder toast explains
-		* why the panel stays empty instead of the click appearing to do nothing. */
+		* backend connectivity probe so the panel can explain an offline backend
+		* (banner inside the panel) instead of looking broken or empty. */
 		function ComfyUITrigger({ t }) {
 			const open = usePanelOpen();
-			return (0, react.createElement)(react.Fragment, null, (0, react.createElement)("button", {
+			return (0, react.createElement)("button", {
 				className: "dsc-trigger",
 				title: t("panelTitle"),
 				"aria-label": t("panelTitle"),
@@ -1420,7 +1491,7 @@ __dshSuiteRegister({
 					panelStore.toggle();
 					if (opening) probeConnection();
 				}
-			}, (0, react.createElement)("span", { className: "dsc-trigger-glyph" }, (0, react.createElement)(ComfyUIIcon)), (0, react.createElement)("span", null, t("panelTitle"))), (0, react.createElement)(ConnectionToast, { t }));
+			}, (0, react.createElement)("span", { className: "dsc-trigger-glyph" }, (0, react.createElement)(ComfyUIIcon)), (0, react.createElement)("span", null, t("panelTitle")));
 		}
 		//#endregion
 		//#region src/client/lightbox.tsx
@@ -2416,6 +2487,7 @@ __dshSuiteRegister({
 		* named explicitly (generation still works; only the live numbers are gone).
 		*/
 		function LiveStrip({ t, live }) {
+			const conn = useConnState();
 			const task = primaryTask(live);
 			const socket = live?.socket ?? null;
 			const connected = socket?.connected === true;
@@ -2444,7 +2516,7 @@ __dshSuiteRegister({
 				parts.push(t("liveQueued", { n: queueRemaining }));
 			} else if (!connected) {
 				dotClass += " dsc-live-dot--off";
-				parts.push(t("liveOffline"));
+				parts.push(conn.status === "fail" ? t("liveOfflineDown") : t("liveOffline"));
 			} else {
 				parts.push(t("liveIdle"));
 			}
@@ -2597,7 +2669,7 @@ __dshSuiteRegister({
 			}, "✕"))), (0, react.createElement)(LiveStrip, {
 				t,
 				live
-			}), (0, react.createElement)("div", { className: "dsc-tabs" }, (0, react.createElement)(TabButton, {
+			}), (0, react.createElement)(ConnectionBanner, { t }), (0, react.createElement)("div", { className: "dsc-tabs" }, (0, react.createElement)(TabButton, {
 				t,
 				active: tab === "workflows",
 				label: t("tabWorkflows"),
@@ -3552,6 +3624,7 @@ __dshSuiteRegister({
 			}, t("cancel")))) : null));
 		}
 		function WorkflowsTab({ t }) {
+			const conn = useConnState();
 			const [list, setList] = (0, react.useState)(null);
 			const [comfyui, setComfyui] = (0, react.useState)(null);
 			const [error, setError] = (0, react.useState)(null);
@@ -3844,7 +3917,7 @@ __dshSuiteRegister({
 					setError(null);
 				}
 			}, t("wfCancel"))));
-			const comfyuiFold = (0, react.createElement)("details", { className: "dsc-fold" }, (0, react.createElement)("summary", null, `${t("wfComfyuiSection")} (${comfyui?.length ?? 0})`), (0, react.createElement)("div", { className: "dsc-fold-body" }, (0, react.createElement)("div", { className: "dsc-hint" }, t("wfComfyuiHint")), comfyuiError !== null ? (0, react.createElement)(ErrorNote, {
+			const comfyuiFold = (0, react.createElement)("details", { className: "dsc-fold" }, (0, react.createElement)("summary", null, `${t("wfComfyuiSection")} (${comfyui?.length ?? 0})`), (0, react.createElement)("div", { className: "dsc-fold-body" }, (0, react.createElement)("div", { className: "dsc-hint" }, t("wfComfyuiHint")), comfyuiError !== null ? conn.status === "fail" ? (0, react.createElement)("div", { className: "dsc-hint" }, t("wfComfyuiOffline")) : (0, react.createElement)(ErrorNote, {
 				t,
 				message: comfyuiError
 			}) : null, comfyui === null ? (0, react.createElement)("div", { className: "dsc-meta" }, "…") : comfyui.length === 0 ? (0, react.createElement)("div", { className: "dsc-meta" }, t("wfComfyuiEmpty")) : (0, react.createElement)("div", { className: "dsc-list" }, comfyui.map((workflow) => (0, react.createElement)("div", {
@@ -4726,6 +4799,7 @@ __dshSuiteRegister({
 		* completed / failed / cancelled chips. Polled every 3 seconds.
 		*/
 		function QueueTab({ t, onPreview, live }) {
+			const conn = useConnState();
 			const [filter, setFilter] = (0, react.useState)("all");
 			const [active, setActive] = (0, react.useState)(null);
 			const [history, setHistory] = (0, react.useState)(null);
@@ -4773,7 +4847,7 @@ __dshSuiteRegister({
 					setBusy(false);
 				}
 			};
-			if (error !== null) return (0, react.createElement)("div", null, (0, react.createElement)(ErrorNote, {
+			if (error !== null) return conn.status === "fail" ? (0, react.createElement)("div", { className: "dsc-hint" }, t("queueOffline")) : (0, react.createElement)("div", null, (0, react.createElement)(ErrorNote, {
 				t,
 				message: error
 			}));
@@ -5053,40 +5127,29 @@ select.dsc-input option { background: var(--dsw-alias-bg-layer-1); color: var(--
 .dsc-trigger:hover { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-1); border-color: var(--dsw-alias-border-l1); }
 .dsc-trigger[aria-pressed='true'] { color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-layer-2); }
 .dsc-trigger-glyph { font-size: 13px; line-height: 1; }
-/* --- connection reminder toast: fixed at the top of the page, mounted by the
-   header trigger when the backend probe cannot reach ComfyUI. The probing
-   state fades in after a short delay so a fast successful probe never paints;
-   the fail state is sticky until dismissed or a later probe recovers. --- */
-.dsc-conn-toast {
-  position: fixed; top: 14px; left: 50%;
-  z-index: 980;
-  display: flex; align-items: flex-start; gap: 10px;
-  max-width: min(560px, 92vw);
-  padding: 10px 12px;
-  background: var(--dsw-alias-bg-layer-2);
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.3);
+/* --- connection banner inside the panel: "ComfyUI is not running" is the
+   everyday offline case, so it reads as a status line with an action, not as a
+   page-level error. The panel stays usable behind it. --- */
+.dsc-conn {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 8px 12px 0; padding: 8px 10px;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-left: 3px solid var(--dsw-alias-state-warn-primary);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
   font-size: 12px; line-height: 1.5;
-  animation: dsc-conn-toast-in 0.16s ease-out both;
+  flex: none;
 }
-.dsc-conn-toast--probing { animation-delay: 0.45s; }
-.dsc-conn-toast--ok { border-color: var(--dsw-alias-state-success-primary); }
-.dsc-conn-toast--fail { border-color: var(--dsw-alias-state-error-primary); }
-.dsc-conn-toast-dot { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; }
-.dsc-conn-toast--probing .dsc-conn-toast-dot { background: var(--dsw-alias-state-warn-primary); animation: dsc-conn-dot 1s ease-in-out infinite; }
-.dsc-conn-toast--ok .dsc-conn-toast-dot { background: var(--dsw-alias-state-success-primary); }
-.dsc-conn-toast--fail .dsc-conn-toast-dot { background: var(--dsw-alias-state-error-primary); }
-.dsc-conn-toast-body { min-width: 0; }
-.dsc-conn-toast-title { font-weight: 600; }
-.dsc-conn-toast--fail .dsc-conn-toast-title { color: var(--dsw-alias-state-error-primary); }
-.dsc-conn-toast--ok .dsc-conn-toast-title { color: var(--dsw-alias-state-success-primary); }
-.dsc-conn-toast-text { color: var(--dsw-alias-label-secondary); margin-top: 2px; overflow-wrap: anywhere; }
-.dsc-conn-toast-close { flex: none; border: none; background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; font-size: 13px; padding: 2px 4px; line-height: 1; }
-.dsc-conn-toast-close:hover { color: var(--dsw-alias-label-primary); }
-@keyframes dsc-conn-toast-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes dsc-conn-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.dsc-conn--fail { border-left-color: var(--dsw-alias-state-error-primary); }
+.dsc-conn-dot { flex: none; width: 8px; height: 8px; margin-top: 4px; border-radius: 50%; background: var(--dsw-alias-state-warn-primary); }
+.dsc-conn--fail .dsc-conn-dot { background: var(--dsw-alias-state-error-primary); }
+.dsc-conn-body { flex: 1; min-width: 0; }
+.dsc-conn-title { font-weight: 600; }
+.dsc-conn--fail .dsc-conn-title { color: var(--dsw-alias-state-error-primary); }
+.dsc-conn-text { color: var(--dsw-alias-label-secondary); margin-top: 2px; overflow-wrap: anywhere; }
+.dsc-conn-error { color: var(--dsw-alias-state-error-primary); margin-top: 2px; overflow-wrap: anywhere; }
+.dsc-conn-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 /* --- panel shell: floating window, percentage-anchored to the page header
    (top) and the composer (bottom), draggable by the header and resizable via
    the corner handle. Follows the host light/dark theme. --- */
@@ -5656,6 +5719,16 @@ video.dsc-picker-player { max-height: 180px; }
 				LiveStrip,
 				About: SuiteAbout,
 				panelStore,
+				ConnectionBanner,
+				connection: {
+					probe: probeConnection,
+					state: getConnState,
+					/** Forget the freshness window between test cases. */
+					reset() {
+						lastOkAt = 0;
+						setState({ status: "hidden" });
+					}
+				}
 			},
 		};
 		exports.apply = apply;
