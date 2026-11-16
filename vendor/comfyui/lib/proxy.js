@@ -39,10 +39,23 @@ export function mountComfyUIProxy(ctx, runtime) {
     const webServer = ctx.get('webServer');
     if (webServer === undefined)
         return undefined;
+    /** DSH 路由准入：Host/Origin fence + 浏览器认证；服务缺失时降级放行。 */
+    const rejected = (request, response) => {
+        const connection = ctx.get?.('connection') ?? ctx.connection;
+        const rejection = connection?.requestRejection?.(request);
+        if (rejection === undefined)
+            return false;
+        response.statusCode = rejection;
+        response.end();
+        return true;
+    };
+
     return webServer.register({
         kind: 'exact',
         path: '/comfyui/media',
         handler: async (request, response) => {
+            if (rejected(request, response))
+                return;
             runtime.hostHint.record(request);
             if (request.method !== 'GET' && request.method !== 'HEAD') {
                 sendJson(response, 405, { error: 'method not allowed' });

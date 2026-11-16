@@ -1,6 +1,6 @@
 /**
  * dsh-comfyui-launcher — lifecycle companion for the portable ComfyUI that lives
- * configured in cordis.patch.yml.
+ * under D:\dsh-video.
  *
  * dsh-comfyui already owns generation (workflow library, comfyui_workflow, the
  * media proxy). What it cannot do is start the server: the portable build needs
@@ -36,12 +36,12 @@ export const inject = ['tools'];
 
 const DEFAULT_LOG_NAME = 'comfyui.log';
 
-const DEFAULTS = { // 默认值指向一种常见的便携版布局；profile 的 cordis.patch.yml 会覆盖 comfyuiDir / pythonPath。
+const DEFAULTS = {
     comfyuiDir: 'D:/dsh-video/a/ComfyUI',
     pythonPath: 'D:/dsh-video/a/python_embeded/python.exe',
     host: '127.0.0.1',
     port: 8188,
-    // Same flags as a typical portable AutoLaunch_ComfyUI.bat, minus --auto-launch
+    // Same flags as D:\dsh-video\a\AutoLaunch_ComfyUI.bat, minus --auto-launch
     // (the launcher must not pop a browser tab) and minus --port/--listen.
     extraArgs: ['--reserve-vram', '1.0', '--gpu-only', '--enable-dynamic-vram', '--disable-pinned-memory'],
     hipVisibleDevices: '0',
@@ -644,7 +644,7 @@ function renderText(value) {
 function serverTool(runtime) {
     return {
         name: 'comfyui_server',
-        description: 'SECONDARY tool: lifecycle only. `status` reports whether the local ComfyUI answers, its address, PID and GPU; `start` launches the portable install (configured install dir) in the background and waits until it answers; `stop` ends the process it started, and when the port answers without a managed child (for example a server that outlived a DSH restart) it ends the process listening on that port; `logs` returns the tail of its log file. Generating content stays with comfyui_workflow — this tool never queues prompts.',
+        description: 'SECONDARY tool: lifecycle only. `status` reports whether the local ComfyUI answers, its address, PID and GPU; `start` launches the portable install (D:\\dsh-video\\a) in the background and waits until it answers; `stop` ends the process it started, and when the port answers without a managed child (for example a server that outlived a DSH restart) it ends the process listening on that port; `logs` returns the tail of its log file. Generating content stays with comfyui_workflow — this tool never queues prompts.',
         parameters: {
             type: 'object',
             properties: {
@@ -739,11 +739,24 @@ function mountRoutes(webCtx, runtime) {
     if (webServer === undefined)
         return () => { };
     const disposers = [];
+    /** DSH 路由准入：Host/Origin fence + 浏览器认证；服务缺失时降级放行。 */
+    const rejected = (request, response) => {
+        const connection = webCtx.get?.('connection') ?? webCtx.connection;
+        const rejection = connection?.requestRejection?.(request);
+        if (rejection === undefined)
+            return false;
+        response.statusCode = rejection;
+        response.end();
+        return true;
+    };
+
     const register = (path, handler) => {
         disposers.push(webServer.register({
             kind: 'exact',
             path,
             handler: async (request, response) => {
+                if (rejected(request, response))
+                    return;
                 try {
                     await handler(request, response);
                 }

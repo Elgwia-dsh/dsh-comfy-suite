@@ -225,7 +225,7 @@ import {
   setEnsureComfyUpHook,
 } from './config.js'
 
-// ★ 2026-11-12（作者提供 GHIL 素材库）：图库索引的读取 / 检索 / 引用解析。
+// ★ 2026-11-12（舰长提供 GHIL 素材库）：图库索引的读取 / 检索 / 引用解析。
 //   纯读盘 + 纯函数，与 ComfyUI 无关，所以单独一个文件、也能单独测。
 import {
   formatEntry,
@@ -2411,7 +2411,7 @@ function makeEditTool(cfg, log) {
 /**
  * ★ 2026-11-12：**模型链要不要接 turbo8 LoRA**（三个辅助工具共用）。
  *
- * 主模型自带蒸馏（turboBakedModel: true，如作者给的 Qwen-Image-2.1-Turbo-*.gguf）时，
+ * 主模型自带蒸馏（turboBakedModel: true，如舰长给的 Qwen-Image-2.1-Turbo-*.gguf）时，
  * 再叠 turbo8 LoRA 就是**双重蒸馏**：实测画面被压暗压黑（暗部像素占比 0.2%→1.3%、发硬），
  * 而且 GGUF 上做 LoRA 补丁还慢 3 倍（1024² 重绘 120 s vs 37 s）。
  *
@@ -2759,7 +2759,7 @@ function makeOutpaintTool(cfg, log) {
 }
 
 /**
- * ★★★ 2026-11-12（作者提供了 GHIL 素材库 + Goohaitools）：**捏人 / 换装**。
+ * ★★★ 2026-11-12（舰长提供了 GHIL 素材库 + Goohaitools）：**捏人 / 换装**。
  *
  * ## 它做什么
  *   从本机图库 `models/GHIL` 里挑一张人像（脸/发型参考）、一件服装、可选发型与姿势，
@@ -3472,7 +3472,7 @@ export function apply(root, rawConfig) {
       log('info', `已注册工具 ${outpaintTool.name}（ImagePadForOutpaint + 潜空间 noise_mask，零额外权重）`)
     })
 
-    // ★★★ 2026-11-12（作者提供 GHIL 素材库 + Goohaitools）：捏人 / 换装。
+    // ★★★ 2026-11-12（舰长提供 GHIL 素材库 + Goohaitools）：捏人 / 换装。
     //   依赖 GH 的 TextEncodeQwenImage21GH（多参考图编码器）—— 没装那个节点包时它一提交就会被拒，
     //   所以在注册时就把"节点在不在"探一次，缺了只记日志（工具表里仍然有，报错信息会指向安装）。
     step('register.character_image', () => {
@@ -3565,7 +3565,7 @@ export function apply(root, rawConfig) {
     //       失败只 warn（出图时还有一次自动启动兜底，不会因为预热失败而画不了图）。
     try {
       ctx.effect(() => {
-        // ★★★ 2026-11-05（作者要求「提升启动速度」+「隐藏窗口」）：
+        // ★★★ 2026-11-05（舰长要求「提升启动速度」+「隐藏窗口」）：
         //   恢复**后台预热**，但**延迟**到 DSH 自己启动完之后（warmupDelayMs）。
         //
         //   2026-11-04 曾因"每次宿主启动都弹 DSHQP-ComfyUI 窗口"而关掉预热；
@@ -4280,12 +4280,25 @@ export function apply(root, rawConfig) {
           })
         }
       }
+      /** DSH 路由准入：Host/Origin fence + 浏览器认证；服务缺失时降级放行。 */
+      const rejected = (request, response) => {
+        const connection = webCtx.get?.('connection') ?? webCtx.connection
+        const rejection = connection?.requestRejection?.(request)
+        if (rejection === undefined) return false
+        response.statusCode = rejection
+        response.end()
+        return true
+      }
+      const reg = (spec) => webCtx.webServer.register({ ...spec, handler: (request, response) => {
+        if (rejected(request, response)) return
+        return spec.handler(request, response)
+      } })
       try {
         webCtx.effect(() => {
           const disposers = [
             '/api/qwen-paint/status.json',
             '/qwen-paint/status.json',
-          ].map((routePath) => webCtx.webServer.register({ kind: 'exact', path: routePath, handler }))
+          ].map((routePath) => reg({ kind: 'exact', path: routePath, handler }))
           // ★★★ 2026-10-12（确认式一键修复）：一个 POST 端点，前端"一键修复"按钮调它。
           //   默认返回预览（将要做什么）；带 {confirm:true} 才真正执行（只做可逆/无害动作）。
           const repairHandler = async (req, res) => {
@@ -4306,7 +4319,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/repair', handler: repairHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/repair', handler: repairHandler }))
           // ★★★ 2026-10-12（首次使用向导）：独立端点，前端"首次使用向导"按钮按需拉取。
           //   故意**不**进状态体 —— 避免把模型名/路径带进每 5 秒轮询、会被日志/宿主带走的契约里。
           const wizardHandler = async (req, res) => {
@@ -4321,7 +4334,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/wizard', handler: wizardHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/wizard', handler: wizardHandler }))
 
           // ★★★ 2026-10-12（用户要求）：**更丰富的 API** —— 在状态/向导/修复之外，
           //   再开 5 个端点：health / capabilities / presets / memory.recent / memory.preference。
@@ -4355,7 +4368,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/health', handler: healthHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/health', handler: healthHandler }))
 
           // ★ /api/qwen-paint/capabilities —— 探测结果（供前端按能力切换 UI / 供 dsh-auto-memory 判断）
           const capsHandler = async (req, res) => {
@@ -4368,7 +4381,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/capabilities', handler: capsHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/capabilities', handler: capsHandler }))
 
           // ★ /api/qwen-paint/presets —— 当前可用的预设列表（含 ASPECTS / FLOW_STYLES）
           //   从 config.js 动态导入，避免本文件 (index.js) 顶部 import 时与 config.js 循环依赖踩坑
@@ -4382,7 +4395,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/presets', handler: presetsHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/presets', handler: presetsHandler }))
 
           // ★ /api/qwen-paint/memory/recent —— dsh-auto-memory 拉取最近出图记忆
           const memoryRecentHandler = async (req, res) => {
@@ -4395,7 +4408,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) })
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/memory/recent', handler: memoryRecentHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/memory/recent', handler: memoryRecentHandler }))
 
           // ★ /api/qwen-paint/memory/preference —— GET 读 / POST 写偏好
           const memoryPrefHandler = async (req, res) => {
@@ -4424,7 +4437,7 @@ export function apply(root, rawConfig) {
             }
             respondJson(res, { ok: false, reason: 'GET or POST only' }, 405)
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/memory/preference', handler: memoryPrefHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/memory/preference', handler: memoryPrefHandler }))
 
           // ★★★ 2026-10-19（用户要求）：**面板里圈选局部重绘**。
           //   面板（client.js）在独立弹窗里画好蒙版，把 base64 PNG POST 到这里；
@@ -4490,7 +4503,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) }, 500)
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/inpaint', handler: inpaintHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/inpaint', handler: inpaintHandler }))
 
           // ★★★ 2026-10-20（0.17.13）：插件自己的**图片字节路由** `/api/qwen-paint/file`。
           //
@@ -4529,7 +4542,7 @@ export function apply(root, rawConfig) {
               respondJson(res, { ok: false, reason: String(error?.message ?? error) }, 404)
             }
           }
-          disposers.push(webCtx.webServer.register({ kind: 'exact', path: '/api/qwen-paint/file', handler: fileBytesHandler }))
+          disposers.push(reg({ kind: 'exact', path: '/api/qwen-paint/file', handler: fileBytesHandler }))
 
           log('info', '已注册只读状态端点 /api/qwen-paint/status.json、修复 /api/qwen-paint/repair、'
             + '向导 /api/qwen-paint/wizard、健康 /api/qwen-paint/health、'
@@ -4598,12 +4611,12 @@ export function apply(root, rawConfig) {
             }
           }
           const disposers = [
-            webCtx.webServer.register({
+            reg({
               kind: 'exact',
               path: '/qwen-paint/loading.webp',
               handler: assetRoute('loading.webp', 'image/webp'),
             }),
-            webCtx.webServer.register({
+            reg({
               kind: 'exact',
               path: '/qwen-paint/loading.gif',
               handler: assetRoute('loading.gif', 'image/gif'),

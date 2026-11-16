@@ -201,8 +201,21 @@ export function mountComfyUIRoutes(ctx, runtime) {
         return undefined;
     // Record the browser's request origin on every route so media URLs can use
     // the address the browser actually reached (loopback, LAN IP, or domain).
+    /** DSH 路由准入：Host/Origin fence + 浏览器认证；服务缺失时降级放行。 */
+    const rejected = (request, response) => {
+        const connection = ctx.get?.('connection') ?? ctx.connection;
+        const rejection = connection?.requestRejection?.(request);
+        if (rejection === undefined)
+            return false;
+        response.statusCode = rejection;
+        response.end();
+        return true;
+    };
+
     const withHint = (handler) => {
         return (request, response) => {
+            if (rejected(request, response))
+                return undefined;
             runtime.hostHint.record(request);
             return handler(request, response);
         };
