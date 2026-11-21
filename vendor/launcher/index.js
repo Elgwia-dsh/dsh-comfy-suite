@@ -17,6 +17,8 @@ import { homedir } from 'node:os';
 // 旧实现用 spawn(windowsHide) —— 虽然也没有窗口，但子进程在 DSH 的作业对象里，
 // 宿主一重启就被带走，于是每次都要再等一轮约 45 秒的冷启动。
 import { launchComfyHidden, isProcessAlive, readRecordedPid } from '../../lib/hidden-launch.js';
+// 2026-11-22: 端口体检/归因（WinError 10013 那次事故的复盘产物，见 lib/ports.js）。
+import { explainBindLog, getPortPlan } from '../../lib/ports.js';
 import { suiteBridge } from '../../lib/bridge.js';
 
 /** One-line receipt into the suite's boot.log; never allowed to break a start. */
@@ -185,6 +187,13 @@ async function status(cfg) {
         url: baseUrl(cfg),
         logPath: cfg.logPath,
     };
+    // 端口体检把配置端口换掉了的话，如实说明"配置写的是哪个、实际用的是哪个"：
+    // 换端口是自愈，不是隐藏状态；用户照着 18088 开浏览器，得知道为什么连不上。
+    const plan = getPortPlan();
+    if (plan.changed === true && plan.port === cfg.port && plan.requestedPort !== cfg.port) {
+        value.requestedPort = plan.requestedPort;
+        value.portNote = plan.reason;
+    }
     if (managed) {
         value.pid = spawnedManaged ? child.pid ?? null : (adopted > 0 ? adopted : managedPid);
         if (adopted > 0)
@@ -258,6 +267,33 @@ async function fileExists(path) {
     }
 }
 
+/**
+ * "进程起来了又立刻没了"的统一收口：先看日志尾部能不能认出端口绑定失败。
+ *
+ * ComfyUI 绑定失败时的退出码就是 1，代码本身什么都说明不了；但 traceback 的
+ * 最后一行一定带着 WinError 号 —— 把它翻成"端口被系统保留（10013）"，比原样
+ * 贴一段 traceback 有用得多（2026-11-21 的教训：真因在日志最底下，而面板只说
+ * "进程启动后立即退出"）。
+ */
+async function explainedExit(cfg) {
+    const tail = await readTail(cfg.logPath, 15);
+    const explained = explainBindLog(tail.lines, cfg.port);
+    const value = {
+        ok: false,
+        action: 'start',
+        error: 'ComfyUI 进程启动后立即退出，检查日志',
+        lines: tail.lines,
+        logPath: cfg.logPath,
+    };
+    if (explained !== null) {
+        value.error = `${explained.message}：ComfyUI 绑定端口失败后退出`
+            + (explained.advice === '' ? '' : `。${explained.advice}`);
+        value.code = explained.code;
+        value.port = cfg.port;
+    }
+    return value;
+}
+
 async function launch(cfg) {
     const mainPy = join(cfg.comfyuiDir, 'main.py');
     if (!(await fileExists(cfg.pythonPath))) {
@@ -312,8 +348,24 @@ async function launch(cfg) {
                     ['PYTHONIOENCODING', 'utf-8'],
                 ],
             });
-            if (!launched.ok)
-                throw new Error(launched.error ?? '无法启动 ComfyUI');
+            if (!launched.ok) {
+                // 端口预检失败：这里**不能**吞成"无法启动 Python"。真实原因是
+                // 端口被系统保留/被占用（WinError 10013 / 10048），而用户看到的
+                // 往往只有一句"启动失败"，于是只能去翻日志——2026-11-21 就是这么过来的。
+                report(`launcher: 端口预检未通过 port=${launched.port ?? cfg.port} code=${launched.code ?? '?'} — ${launched.error ?? ''}`);
+                if (launched.code === 'EALREADYUP') {
+                    const current = await status(cfg);
+                    return { ...current, action: 'start', alreadyRunning: true };
+                }
+                return {
+                    ok: false,
+                    action: 'start',
+                    error: launched.error ?? '无法启动 ComfyUI',
+                    port: cfg.port,
+                    ...(typeof launched.code === 'string' ? { code: launched.code } : {}),
+                    logPath: cfg.logPath,
+                };
+            }
             // 启动回执：跟套件的 boot.log 放在一起，出问题不必靠猜。
             report(`launcher: hidden via=${launched.via} pid=${launched.pid} launcher=${launched.launcherPid}`);
             managedPid = launched.pid;
@@ -360,28 +412,14 @@ async function launch(cfg) {
     while (Date.now() < deadline) {
         await delay(1_000);
         if (spawned !== null && (spawned.exitCode !== null || spawned.signalCode !== null)) {
-            const tail = await readTail(cfg.logPath, 15);
-            return {
-                ok: false,
-                action: 'start',
-                error: 'ComfyUI 进程启动后立即退出，检查日志',
-                lines: tail.lines,
-                logPath: cfg.logPath,
-            };
+            return await explainedExit(cfg);
         }
         if (detached && managedPid > 0 && !isProcessAlive(managedPid)) {
             // One probe decides: a stale pid next to a live server is a resolution
             // race, not a crash. Only a dead pid + dead port counts as an exit.
             const after = await probe(cfg, 1_500);
             if (!after.up) {
-                const tail = await readTail(cfg.logPath, 15);
-                return {
-                    ok: false,
-                    action: 'start',
-                    error: 'ComfyUI 进程启动后立即退出，检查日志',
-                    lines: tail.lines,
-                    logPath: cfg.logPath,
-                };
+                return await explainedExit(cfg);
             }
         }
         const heartbeat = await probe(cfg, 1_500);
@@ -596,6 +634,8 @@ function renderText(value) {
     }
     if (value.ok !== true) {
         lines.push(`${action === 'start' ? '启动' : action === 'stop' ? '停止' : '状态'}失败：${value.error ?? '未知错误'}`);
+        if (Number.isFinite(value.port))
+            lines.push(`端口：${value.port}`);
         if (typeof value.logPath === 'string' && value.logPath !== '')
             lines.push(`日志：${value.logPath}`);
         const entries = Array.isArray(value.lines) ? value.lines : [];
@@ -623,6 +663,8 @@ function renderText(value) {
         lines.push(`ComfyUI：${state} · ${managed}`);
         if (running)
             lines.push(`地址：${value.url ?? ''}${Number.isFinite(value.latencyMs) ? ` · 响应 ${value.latencyMs}ms` : ''}`);
+        if (Number.isFinite(value.requestedPort) && typeof value.portNote === 'string' && value.portNote !== '')
+            lines.push(`换端口：配置写的是 ${value.requestedPort}，实际用 ${value.url ?? ''}（${value.portNote}）`);
         if (typeof value.pid === 'number')
             lines.push(`PID：${value.pid}`);
         if (Number.isFinite(value.uptimeMs))

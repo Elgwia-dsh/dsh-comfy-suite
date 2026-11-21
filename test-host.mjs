@@ -12,6 +12,7 @@
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +21,7 @@ process.env.DSH_HOME = home;
 
 const suite = await import(new URL('./lib/index.js', import.meta.url));
 const { suiteBridge } = await import(new URL('./lib/bridge.js', import.meta.url));
+const { getPortPlan } = await import(new URL('./lib/ports.js', import.meta.url));
 
 const EXPECTED = [
     'comfyui_workflow', 'comfyui_skill', 'comfyui_object_info', 'comfyui_run',
@@ -38,9 +40,11 @@ const EXPECTED = [
  * Mount the suite once against a registry that may refuse selected names.
  * @param {object} options
  * @param {Set<string>} [options.refuse] tool names whose register() throws
+ * @param {number} [options.port] launcher port (and the port both URLs point at)
  */
-function mount({ refuse = new Set() } = {}) {
+function mount({ refuse = new Set(), port = 8188 } = {}) {
     const registered = new Map();
+    const childConfigs = new Map();
     const effects = [];
     const events = [];
     const writes = [];
@@ -97,6 +101,7 @@ function mount({ refuse = new Set() } = {}) {
             },
             plugin(plugin, config) {
                 const child = `${label}/${plugin.name ?? '?'}`;
+                childConfigs.set(plugin.name ?? child, config);
                 const result = plugin.apply(makeCtx(child), config);
                 return result !== null && typeof result === 'object' && typeof result.then === 'function'
                     ? { then() { } }
@@ -108,14 +113,14 @@ function mount({ refuse = new Set() } = {}) {
     }
 
     const config = {
-        comfyui: { baseUrl: 'http://127.0.0.1:8188', dataDir: join(home, 'comfyui-data') },
-        launcher: { port: 8188 },
-        qwenPaint: { steps: 8 },
+        comfyui: { baseUrl: `http://127.0.0.1:${port}`, dataDir: join(home, 'comfyui-data') },
+        launcher: { host: '127.0.0.1', port },
+        qwenPaint: { comfyUrl: `http://127.0.0.1:${port}`, steps: 8 },
     };
 
     const ctx = makeCtx('suite');
     suite.apply(ctx, config);
-    return { registered, effects, events, writes, refreshes, ctx };
+    return { registered, childConfigs, effects, events, writes, refreshes, ctx };
 }
 
 // ── 1. 正常挂载：10 个工具全在 ──────────────────────────────────────────
@@ -169,6 +174,50 @@ function mount({ refuse = new Set() } = {}) {
     suiteBridge.update = restore;
     void ctx;
     console.log('ok - settings writes target comfy-suite and fan out a refresh');
+}
+
+// ── 5. 端口体检：配置端口被占（且不是 ComfyUI）时，三块一起换端口 ──────
+// 2026-11-21 事故的回归测试：8188 落在 WinNAT 保留区间，三块配置各说各的，
+// 结果是 14 个工具全废、报错只有"进程启动后立即退出"。
+{
+    // 一个只会回 404 的 HTTP 服务：探测会立刻判定"不是 ComfyUI"，测试不必等超时。
+    // `connection: close` + 主动 destroy 是必须的 —— 否则 fetch 留下的 keep-alive
+    // 连接会让 server.close() 永远等不到回调，测试进程卡在 top-level await 上。
+    const sockets = new Set();
+    const blocker = createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+        socket.on('error', () => { });
+        socket.end('HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n');
+    });
+    await new Promise((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const blocked = blocker.address().port;
+    try {
+        const { childConfigs } = mount({ port: blocked });
+        await new Promise((resolve) => setTimeout(resolve, 800));
+
+        const launcherCfg = childConfigs.get('dsh-comfyui-launcher');
+        const comfyuiCfg = childConfigs.get('dsh-comfyui');
+        const paintCfg = childConfigs.get('qwen-paint');
+        assert.ok(launcherCfg !== undefined, 'launcher child must mount');
+        assert.ok(comfyuiCfg !== undefined, 'comfyui child must mount');
+        assert.ok(paintCfg !== undefined, 'qwen-paint child must mount');
+
+        assert.notEqual(launcherCfg.port, blocked, 'a blocked port must be replaced');
+        assert.ok(launcherCfg.port > blocked, `expected a port after ${blocked}, got ${launcherCfg.port}`);
+        assert.equal(comfyuiCfg.baseUrl, `http://127.0.0.1:${launcherCfg.port}`, 'comfyui.baseUrl must follow');
+        assert.equal(paintCfg.comfyUrl, `http://127.0.0.1:${launcherCfg.port}`, 'qwenPaint.comfyUrl must follow');
+
+        const plan = getPortPlan();
+        assert.equal(plan.requestedPort, blocked, 'the plan must remember what the config asked for');
+        assert.equal(plan.port, launcherCfg.port);
+        assert.equal(plan.changed, true);
+        console.log(`ok - blocked port ${blocked} replaced by ${plan.port} across all three blocks`);
+    }
+    finally {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve) => blocker.close(() => resolve()));
+    }
 }
 
 console.log('OK host smoke test passed');
