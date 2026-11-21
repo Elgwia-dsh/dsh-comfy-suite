@@ -73,7 +73,7 @@ PermissionError: [Errno 13] error while attempting to bind on address ('127.0.0.
 换端口后 `boot.log` 会有一行 `ports: 8188 → 8189 — …`，`comfyui_server status` 也会给出
 `换端口：配置写的是 8188，实际用 http://127.0.0.1:8189`；要用浏览器直连 ComfyUI 时按这一行改地址。
 
-**回归**：`test-launch.mjs` 新增 14 条端口 / 预检纯函数断言（EACCES 换端口、EADDRINUSE 但应答的是
+**回归**：`test-launch.mjs` 新增 15 条端口 / 预检纯函数断言（EACCES 换端口、EADDRINUSE 但应答的是
 ComfyUI 时不换、整段被保留时如实报告、traceback 归因、三块对齐、`EALREADYUP`）；`test-host.mjs`
 新增一条端到端断言：占住配置端口后，三个子插件拿到的必须是同一个新端口。
 
