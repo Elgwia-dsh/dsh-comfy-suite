@@ -275,8 +275,13 @@ PROFILE=/c/Users/you/.dsh/profiles/desktop bash install.sh
 | `launcher` | `comfyuiDir` / `pythonPath` | ComfyUI 根目录与它自带的 python |
 | `qwenPaint` | `comfyPython` / `comfyMainPy` / `comfyWorkdir` | Python、`main.py`、工作目录 |
 
-主模型默认是 `Qwen-Image-2.1-Turbo-AD-Q6_K.gguf`，要跟你的 `models/` 里的文件名一致；
-换模型就改 `qwenPaint.unet`（GGUF 走 `UnetLoaderGGUF`）。
+主模型默认是 `qwen_image_2.1_int8_convrot.safetensors`（**完整版，非蒸馏**），
+要跟你的 `models/` 里的文件名一致；换模型就改 `qwenPaint.unet`。
+加载器按扩展名自动选：`.safetensors` → 原生 `UNETLoader`，`.gguf` → `UnetLoaderGGUF*`。
+
+> 2026-11-24：主模型从蒸馏 GGUF 换成完整版 int8_convrot。差在哪见下一节「主模型选择」。
+> 换模型时**必须同步改** `turboBakedModel` / `turbo8Enabled`，否则插件会继续按
+> 9 步 / CFG 1 的蒸馏工作点跑完整版（欠采样，画面发糊）。
 
 ### 自带依赖
 
@@ -484,7 +489,8 @@ POST /api/comfy-suite/wardrobe/draw     把抽到的 prompt 交给 draw_image（
 - **工具里的 `steps` 是对同一张表重采样**（线性插值、末尾恒 0），不是换调度器。
 
 开关在 `qwenPaint.samplingProfile`：`turbo9`（默认）/ `ksimple`（老链路，留作对照）。
-没有 turbo LoRA 的机器会被自动忽略（那种情况本来就走 25 步 / CFG 2.5 的原生链路）。
+`plan.useTurbo === false` 时这个开关整个被忽略，直接走原生链路（`baseSteps` / `baseCfg`）。
+2026-11-24 起本机默认就是原生链路：主模型换成完整版，CFG 用 3。
 
 实现落在 `vendor/qwen-paint/lib/sampling.js`（表 + 重采样/截档函数）：
 `config.js` 已经 249 KB，逼近 DSH STORE 的单文件 262144 字节上限，所以这张表单独一个文件。
@@ -572,9 +578,56 @@ character_image portrait="ghil:人像/f71f980dde3" costume="D:\assets\外套.jpg
 > 那包没装时工具仍在工具表里，但一提交就会被 ComfyUI 以"节点不存在"拒收——
 > 报错原文会指出是哪个节点，按提示装包即可；`draw_image` / `inpaint_image` 不受影响。
 
-## turbo GGUF 主模型（2026-11-12）
+## 主模型选择（2026-11-24 实测）
 
-Qwen-Image-2.1-Turbo-AD-Q6_K.gguf 是**自带蒸馏**的 turbo 主模型，现在作为默认主模型。
+同一 prompt、同一 seed（20261124）、同一尺寸 1024×1376，只换模型 / 加载路径 / 工作点：
+
+| 主模型 | 加载器 | 采样 | 平坦区噪声 | 暗部噪声 | 细节能量 | 耗时 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Qwen-Image-2.1-Turbo-AD-Q6_K.gguf` | UnetLoaderGGUFAdvanced(target) | 9 步表 / CFG 1 | 1.127 | 3.159 | 207.0 | 109.8 s |
+| `qwen_image_2.1_turbo_int8_convrot` | UNETLoader | 9 步表 / CFG 1 | 1.116 | 3.108 | 202.8 | **26.2 s** |
+| `qwen_image_2.1_int8_convrot`（完整版） | UNETLoader | 25 步 / CFG 3 | **0.957** | **1.946** | 136.5 | 94.7 s |
+
+（噪声 = 归一化到 1024 宽后、平坦区/暗部的亮度高频标准差，越低越干净；
+细节能量 = 拉普拉斯方差，太低说明被磨平。）
+
+三条结论：
+
+1. **量化格式只影响速度，不影响画质。** GGUF Q6_K 与 int8_convrot 的指标几乎相同
+   （1.127 vs 1.116），但 int8_convrot 走 ROCm 原生 convrot 内核，**快约 4 倍**（26 s vs 110 s）。
+   GGUF 只能 torch 现场反量化，是纯损耗 —— 能用 safetensors 就别用 GGUF。
+2. **蒸馏模型不能加步数。** 同一个 turbo 主模型按 25 步跑时，暗部噪声反而从 3.11 涨到
+   4.49（+44%）—— 蒸馏工作点固定在 8~9 步，多跑只是把细节反复叠成砂。
+3. **完整版更干净，但要用纹理换。** 换成非蒸馏完整版 + 25 步 + CFG 3：暗部噪声降 37%、
+   平坦区降 15%，代价是细节能量掉 33%（皮肤更平、发丝更软）。
+
+当前默认取完整版（干净优先）。配置：
+
+```yaml
+qwenPaint:
+  unet: 'qwen_image_2.1_int8_convrot.safetensors'
+  turboBakedModel: false
+  turbo8Enabled: false     # 必须显式关：level 探测成 full 时插件仍会判「turbo 可用」，
+                           # 那样完整版会被按 9 步 / CFG 1 跑（实测明显欠采样）
+  baseSteps: 25
+  baseCfg: 3               # 官方推荐 2.5~4，实测 3.0 比默认 2.5 更稳
+  steps: 25
+  forceTurbo8Steps: false
+```
+
+想换回蒸馏快档：unet 指回 `qwen_image_2.1_turbo_int8_convrot.safetensors`，
+`turboBakedModel` / `turbo8Enabled` 置 true，采样会自动回到 9 步表 / CFG 1。
+
+> ⚠ 改完这些配置**必须重启 DSH**。`qwen-paint` 的 cfg 在 `apply()` 时合并并被工具闭包捕获，
+> 改 patch 文件不会热重建 —— 实测等两轮热重载（40 s）仍是旧值，只有重启宿主才生效。
+> 症状：`draw_image` 报 `unet_name ... not in []`（拿旧文件名去问一个已经不存在的加载器）。
+
+## turbo GGUF 主模型（2026-11-12，2026-11-24 已弃用）
+
+> 2026-11-24 起默认主模型换成完整版 `qwen_image_2.1_int8_convrot`，GGUF turbo 已从本机删除。
+> 这段保留作为历史：如果要用 GGUF 路线，下面两个坑依然存在。
+
+Qwen-Image-2.1-Turbo-AD-Q6_K.gguf 是**自带蒸馏**的 turbo 主模型。
 它有两个坑，都已实测解决：
 
 **① 文件缺元数据。** 这个 GGUF 的 metadata_kv_count 是 0（没有 general.architecture），
