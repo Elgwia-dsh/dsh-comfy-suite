@@ -49,11 +49,11 @@
       "versions": [
         {
           "version": "1.6.4",
-          "publishTimestamp": 1795589899,
+          "publishTimestamp": 1795590300,
           "source": {
             "type": "git",
             "url": "https://github.com/Elgwia-dsh/dsh-comfy-suite",
-            "commit": "2e649c0f68a527437d8c40a9654b13e0e1b45274"
+            "commit": "4c60be53da13bebd5c099df3bc6bb00e25ead7e6"
           },
           "engines": {
             "dsh": ">=0.2.1-rc.5 <0.3.0-0"
