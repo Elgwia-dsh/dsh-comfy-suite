@@ -156,6 +156,8 @@ import {
   NO_SELF_DRAW_RULE,
   OUTPUT_SCHEMA,
   PARAMETERS,
+  // ★ 2026-11-25：参数表按配置生成（steps / negative 的说明不能再写死成蒸馏链路的说法）
+  drawParameters,
   GPU_CACHE,
   CAP_CACHE,
   PROBE_FAIL_TTL_MS,
@@ -225,7 +227,7 @@ import {
   setEnsureComfyUpHook,
 } from './config.js'
 
-// ★ 2026-11-12（舰长提供 GHIL 素材库）：图库索引的读取 / 检索 / 引用解析。
+// ★ 2026-11-12（作者提供 GHIL 素材库）：图库索引的读取 / 检索 / 引用解析。
 //   纯读盘 + 纯函数，与 ComfyUI 无关，所以单独一个文件、也能单独测。
 import {
   formatEntry,
@@ -1270,7 +1272,7 @@ function makeDrawTool(ctx, cfg, log, onProduced, onStart) {
           + '就如实说明"这是按参数挑的、没有实际看图"，**绝不假装看过**。'
           + '同时请记住用户对画风的偏好（例如"不要卡通""要写实"），下次挑图按偏好来。'
         : ''),
-    parameters: PARAMETERS,
+    parameters: drawParameters(cfg),
     timeoutMs: cfg.timeoutMs,
     output: {
       schema: OUTPUT_SCHEMA,
@@ -2411,7 +2413,7 @@ function makeEditTool(cfg, log) {
 /**
  * ★ 2026-11-12：**模型链要不要接 turbo8 LoRA**（三个辅助工具共用）。
  *
- * 主模型自带蒸馏（turboBakedModel: true，如舰长给的 Qwen-Image-2.1-Turbo-*.gguf）时，
+ * 主模型自带蒸馏（turboBakedModel: true，如作者给的 Qwen-Image-2.1-Turbo-*.gguf）时，
  * 再叠 turbo8 LoRA 就是**双重蒸馏**：实测画面被压暗压黑（暗部像素占比 0.2%→1.3%、发硬），
  * 而且 GGUF 上做 LoRA 补丁还慢 3 倍（1024² 重绘 120 s vs 37 s）。
  *
@@ -2759,7 +2761,7 @@ function makeOutpaintTool(cfg, log) {
 }
 
 /**
- * ★★★ 2026-11-12（舰长提供了 GHIL 素材库 + Goohaitools）：**捏人 / 换装**。
+ * ★★★ 2026-11-12（作者提供了 GHIL 素材库 + Goohaitools）：**捏人 / 换装**。
  *
  * ## 它做什么
  *   从本机图库 `models/GHIL` 里挑一张人像（脸/发型参考）、一件服装、可选发型与姿势，
@@ -2839,7 +2841,12 @@ function makeCharacterTool(cfg, log) {
           type: 'string',
           description: '画面描述。不填就按实际给了的参考图自动拼一句（影棚全身像 + 逐条参考）。',
         },
-        negative: { type: 'string', description: '负面词（cfg=1 时基本不生效，一般不用填）。' },
+        // ★ 2026-11-25：原先写死「cfg=1 时基本不生效」，只在 turbo 蒸馏链路成立；
+        //   原生链路 CFG>1，负面词是有效的。改成按链路说明，别让模型白扔这个旋钮。
+        negative: {
+          type: 'string',
+          description: '负面词（不想要的内容）。原生链路（CFG>1）有效；turbo 蒸馏链路 CFG=1，基本不生效。',
+        },
         size: { type: 'string', description: '画幅：1:1 / 3:4（默认）/ 4:3 / 2:3 / 3:2 / 16:9 / 9:16。' },
         megapixels: { type: 'number', description: '总像素（百万），默认 1.0。' },
         count: { type: 'integer', description: '一次出几张（1–4，默认 1）。多张会串行提交、种子 +1。' },
@@ -2933,10 +2940,32 @@ function makeCharacterTool(cfg, log) {
       const clip = (caps && caps.models && caps.models.clip) || cfg.clip
       const vae = (caps && caps.models && caps.models.vae) || cfg.vae
       const loraName = (plan && plan.models && plan.models.turbo8Lora) || cfg.turbo8Lora || DEFAULT_TURBO8_LORA
-      const useTurbo = plan === null || plan.useTurbo !== false
+      // ★ 2026-11-25 修 bug：探不到能力时**不能默认按 turbo 跑**。
+      //   旧写法 `plan === null || plan.useTurbo !== false` 在 object_info 超时/网络抖动
+      //   （caps 为 null）时一律当 turbo：完整版模型会被按 9 步 sigma 表 + CFG 1 采样，
+      //   画面明显发糊，而且没有任何提示 —— 这是"探测失败静默降画质"，比慢更糟。
+      //   现在退回配置里的静态事实：只有用户明确声明主模型自带蒸馏、且没关 turbo，
+      //   才在没有探测结果时按 turbo 跑；其余情况走原生链路（慢一点，但对）。
+      let useTurbo
+      if (plan !== null) {
+        useTurbo = plan.useTurbo !== false
+      } else {
+        useTurbo = cfg.turboBakedModel === true && cfg.turbo8Enabled !== false
+        log('warn', `能力探测失败 → 按配置判定采样链路：${useTurbo ? 'turbo' : '原生'}`
+          + `（turboBakedModel=${cfg.turboBakedModel === true} turbo8Enabled=${cfg.turbo8Enabled !== false}）`)
+      }
       const turbo9 = useTurbo && cfg.samplingProfile !== 'ksimple'
       const steps = turbo9StepsForPixels(width * height,
         Number.isFinite(cfg.manualSigmasSteps) && cfg.manualSigmasSteps > 0 ? Math.trunc(cfg.manualSigmasSteps) : 9)
+      // 原生链路的采样工作点：优先用探测出来的 plan（与 draw_image 同源），
+      // 探测不到才退回配置里的 baseSteps / baseCfg。旧实现写死 25 步 / CFG 2.5，
+      // 于是同一套配置下 draw_image 用 baseCfg=3、捏人用 2.5，档位对不上。
+      const nativeSteps = plan !== null && Number.isFinite(plan.steps)
+        ? Math.max(1, Math.min(60, Math.trunc(plan.steps)))
+        : (Number.isFinite(cfg.baseSteps) && cfg.baseSteps > 0 ? Math.trunc(cfg.baseSteps) : 25)
+      const nativeCfg = plan !== null && Number.isFinite(plan.cfgScale)
+        ? plan.cfgScale
+        : (Number.isFinite(cfg.baseCfg) && cfg.baseCfg > 0 ? cfg.baseCfg : 2.5)
 
       // 参考图逐张上传（ComfyUI 的 input 目录未必是配置里以为的那个，所以问它本人要位置）
       // ★ 2026-11-12：按序号加前缀 —— 两张参考图同名（不同目录、同一个 basename）时
@@ -3001,7 +3030,7 @@ function makeCharacterTool(cfg, log) {
           workflow[16] = {
             class_type: 'KSampler',
             inputs: {
-              model: [modelRef, 0], seed, steps: 25, cfg: 2.5, sampler_name: 'euler', scheduler: 'simple',
+              model: [modelRef, 0], seed, steps: nativeSteps, cfg: nativeCfg, sampler_name: 'euler', scheduler: 'simple',
               positive: ['10', 0], negative: ['10', 1], latent_image: ['10', 2], denoise: 1.0,
             },
           }
@@ -3472,7 +3501,7 @@ export function apply(root, rawConfig) {
       log('info', `已注册工具 ${outpaintTool.name}（ImagePadForOutpaint + 潜空间 noise_mask，零额外权重）`)
     })
 
-    // ★★★ 2026-11-12（舰长提供 GHIL 素材库 + Goohaitools）：捏人 / 换装。
+    // ★★★ 2026-11-12（作者提供 GHIL 素材库 + Goohaitools）：捏人 / 换装。
     //   依赖 GH 的 TextEncodeQwenImage21GH（多参考图编码器）—— 没装那个节点包时它一提交就会被拒，
     //   所以在注册时就把"节点在不在"探一次，缺了只记日志（工具表里仍然有，报错信息会指向安装）。
     step('register.character_image', () => {
@@ -3565,7 +3594,7 @@ export function apply(root, rawConfig) {
     //       失败只 warn（出图时还有一次自动启动兜底，不会因为预热失败而画不了图）。
     try {
       ctx.effect(() => {
-        // ★★★ 2026-11-05（舰长要求「提升启动速度」+「隐藏窗口」）：
+        // ★★★ 2026-11-05（作者要求「提升启动速度」+「隐藏窗口」）：
         //   恢复**后台预热**，但**延迟**到 DSH 自己启动完之后（warmupDelayMs）。
         //
         //   2026-11-04 曾因"每次宿主启动都弹 DSHQP-ComfyUI 窗口"而关掉预热；

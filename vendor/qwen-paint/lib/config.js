@@ -4470,6 +4470,48 @@ const PARAMETERS = {
   required: ['prompt'],
 }
 
+/**
+ * ★ 2026-11-25：draw_image 的参数表 —— 把两条跟**当前链路**有关的说明按配置生成。
+ *
+ * 为什么要动态生成，而不是写死在 PARAMETERS 里：同一份代码要同时服务两种部署，
+ *   · turbo 8 步蒸馏链路：`steps` 被 `forceTurbo8Steps` 锁死在 8，`cfg` 恒为 1
+ *     （负面词几乎不起作用）；
+ *   · 原生（完整版）链路：`steps` / `cfg` 都是真正可调的旋钮，`cfg = baseCfg`（默认 3）
+ *     时负面词**确实生效**。
+ *
+ * 写死的那版文案是 2026-10 的蒸馏链路时期写的（"本参数会被忽略、强制 8 步"
+ * "负面词基本不生效"）。2026-11-24 主模型换成完整版 int8 之后，这两句话
+ * 全部失真：模型读到会主动放弃 `steps` 与 `negative` 两个有效旋钮，等于配置升级了、
+ * 出图能力没跟上。文案跟着配置走，才不会再出现这种"说明书比系统旧"的漂移。
+ *
+ * @param {object} cfg 已合并的插件配置（缺省值时按 DEFAULTS 的常量展示）
+ * @returns 一份可以安全交给 tools.register 的参数 schema（不改动 PARAMETERS 本身）
+ */
+function drawParameters(cfg = {}) {
+  const c = cfg !== null && typeof cfg === 'object' ? cfg : {}
+  const baseSteps = Number.isFinite(c.baseSteps) && c.baseSteps > 0 ? Math.trunc(c.baseSteps) : BASE_STEPS
+  const baseCfg = Number.isFinite(c.baseCfg) && c.baseCfg > 0 ? c.baseCfg : BASE_CFG
+  const stepsLocked = c.forceTurbo8Steps !== false
+  const stepsDescription =
+    '采样步数，范围 1-60，步数越高越精细、越慢。不填则用当前链路的默认步数：'
+    + `原生链路 ${baseSteps} 步；turbo 8 步蒸馏链路 ${TURBO8_STEPS} 步。`
+    + (stepsLocked
+      ? `⚠ 当前配置 forceTurbo8Steps=true：走蒸馏链路时本参数会被忽略（强制 ${TURBO8_STEPS} 步）；`
+        + '想让本参数生效，先在配置里把 forceTurbo8Steps 设为 false。'
+      : '当前配置 forceTurbo8Steps=false：本参数在两条链路上都生效（显式传值优先于默认步数）。')
+  const negativeDescription =
+    '负面提示词（不想要的内容）。CFG > 1 时生效：'
+    + `原生链路 CFG=${baseCfg}（负面词有用）；turbo 蒸馏链路 CFG=1，负面词基本不起作用。`
+  return {
+    ...PARAMETERS,
+    properties: {
+      ...PARAMETERS.properties,
+      steps: { ...PARAMETERS.properties.steps, description: stepsDescription },
+      negative: { ...PARAMETERS.properties.negative, description: negativeDescription },
+    },
+  }
+}
+
 /** 结果 schema（标准 JSON Schema）。 */
 
 // ===== moved from index.js: OUTPUT_SCHEMA (was lines 4586-4615) =====
@@ -4639,6 +4681,8 @@ export {
   NO_SELF_DRAW_RULE,
   OUTPUT_SCHEMA,
   PARAMETERS,
+  // ★ 2026-11-25：按配置生成 draw_image 参数表（steps / negative 的说明跟着链路走）
+  drawParameters,
   GPU_CACHE,
   CAP_CACHE,
   PROBE_FAIL_TTL_MS,

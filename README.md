@@ -38,6 +38,51 @@
 > 2026-11-17（1.6.2）：面板离线体验修复——ComfyUI 没启动时点开面板不再弹报错。见下节。
 >
 > 2026-11-22（1.6.3）：**端口体检**——ComfyUI 起不来时先说清"这个端口能不能绑"。见下节。
+>
+> 2026-11-25（1.6.4）：**说明书跟着配置走**——steps/negative 的参数说明按配置生成，
+> 捏人不再在探测失败时误走 turbo，默认 patch 换成完整版主模型。见下节。
+
+## 1.6.4：工具说明书跟着配置走，默认配置跟着模型走
+
+主线是 2026-11-24 把主模型换成完整版 int8 之后留下的一批「说明书比系统旧」的问题 ——
+代码没崩，但模型照着旧文案办事，出图能力和默认配置都没跟上。
+
+### draw_image 的 steps / negative 说明改为按配置生成
+
+`steps` 的说明一直是 10 月蒸馏链路写的：「turbo8 八步蒸馏下本参数**会被忽略**、强制 8 步」。
+主模型换成完整版、`forceTurbo8Steps: false` 之后这句话**不成立** —— `steps` 是真正生效的旋钮。
+`negative` 同理（旧文案说"cfg=1，负面词基本不生效"，而原生链路 CFG=3，负面词有效）。
+模型读到旧文案会主动不用这两个参数：配置升级了，出图能力却没跟上。
+
+- 新增 `drawParameters(cfg)`：按当前配置生成 `steps` / `negative` 的说明（原生链路默认步数、
+  `forceTurbo8Steps` 的实际状态、当前 CFG）；`PARAMETERS` 本身不动，schema 形状与既有断言不受影响。
+- 捏人工具的 `negative` 说明同步改成「原生链路 CFG>1 有效 / turbo 链路 CFG=1 基本无效」。
+
+### 捏人：能力探测失败时不再默认按 turbo 跑
+
+`character_image` 旧写法 `useTurbo = plan === null || plan.useTurbo !== false`：`object_info`
+超时（网络抖动）时 `plan` 为 null，于是**完整版模型被按 9 步 sigma 表 + CFG 1 采样** —— 画面发糊、
+而且没有任何提示。现在退回配置里的静态事实：只有 `turboBakedModel: true` 且没关 turbo，才在探测失败时
+按 turbo 跑；其余情况走原生链路（慢一点但对），并记一条 warn。原生分支的 `steps / cfg` 也从写死的
+`25 / 2.5` 改成 `plan.steps / plan.cfgScale`（与 draw_image 同源），探测不到才退回 `baseSteps / baseCfg`。
+
+### 默认 patch 不再指向已删除的 turbo GGUF
+
+包内 `cordis.patch.yml` 的默认主模型还写着 `Qwen-Image-2.1-Turbo-AD-Q6_K.gguf` + `turboBakedModel: true`
++ 8 步锁。那个文件 2026-11-24 已从磁盘删除，新装（或配置被重置）会直接「模型不存在」。现在默认改为
+完整版 `qwen_image_2.1_int8_convrot.safetensors` + `baseSteps 25 / baseCfg 3`，并显式
+`turbo8Enabled: false`（默认部署里没有 Qwen 的 turbo LoRA，开着只会在探测出错时误判）。
+示例路径同时改成中性的 `D:/ComfyUI` 布局 —— 原来那份带着作者机器的实际安装路径。
+
+### 工作流列表：过滤命中数与目录聚合
+
+- 带 `filter` 时列表头原来报的是**全库条数**（"共 224 个，列出 5 个"），实际命中只有 33 个 ——
+  模型会误判"还有一百多个能翻"。现在写成「全库 224 个，命中 33 个」。
+- 图工作流一大（测试机 224 个、多层目录）逐条扫不现实：列表多一行**按顶层目录聚合的条数**，
+  模型据此用 `filter: "目录名"` 收窄，比反复加大 `limit` 省 token。
+
+**回归**：`test-sampling.mjs` +3（drawParameters 两条链路口径、schema 形状不变），
+`test-comfyui.mjs` +2（目录聚合、列表渲染的命中数 / 目录行 / 预检行）。宿主侧改动需重启 DSH 生效。
 
 ## 1.6.3：ComfyUI 拉不起来时，先问一句"这个端口能不能绑"
 
@@ -266,7 +311,7 @@ PROFILE=/c/Users/you/.dsh/profiles/desktop bash install.sh
 
 ### 必改配置
 
-`cordis.patch.yml` 三块路径默认指向作者本机的便携版布局（`D:/dsh-video/a/...`），
+`cordis.patch.yml` 三块路径默认是占位的 `D:/ComfyUI` 布局，
 **换成你自己的 ComfyUI 安装目录**，否则启停与出图都会找不到文件：
 
 | 配置块 | 字段 | 指向 |

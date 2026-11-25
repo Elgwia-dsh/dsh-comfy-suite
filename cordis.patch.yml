@@ -4,7 +4,12 @@
 # 已经并入这里：comfyui 块的字段原先由 launcher 的 patch 覆盖，launcher 块是
 # 启动器自己的配置，qwenPaint 块是千问出图的优化档。
 #
-# 改配置就在这一层改；升级本包不会覆盖它。\n#\n# 注意：下面三块里的路径是示例（作者环境的一种便携版布局），装到别的机器上请改成\n# 你自己的 ComfyUI 安装目录，否则启停与出图都会找不到文件。
+# 改配置就在这一层改；升级本包不会覆盖它。
+#
+# ⚠ 下面三块用的是占位路径（`D:/ComfyUI` 这一种便携版布局），装到别的机器上
+#   请改成你自己的 ComfyUI 安装目录，否则启停与出图都会找不到文件。
+#   端口 8188 是 ComfyUI 的默认值；若这个端口被系统保留（Windows WinError 10013），
+#   插件激活时会自动往后挑一个能绑的，并在 boot.log 里写明换了哪个（见 README 1.6.3）。
 - insert:
     - id: comfy-suite
       name: 'dsh-comfy-suite'
@@ -13,33 +18,39 @@
         comfyui:
           baseUrl: 'http://127.0.0.1:8188'
           comfyuiDirs:
-            - 'D:/dsh-video/a/ComfyUI'
-          outputDir: 'D:/dsh-video/a/ComfyUI/output'
+            - 'D:/ComfyUI'
+          outputDir: 'D:/ComfyUI/output'
         # ── 服务启停（原 dsh-comfyui-launcher）──────────────────────────
         launcher:
-          comfyuiDir: 'D:/dsh-video/a/ComfyUI'
-          pythonPath: 'D:/dsh-video/a/python_embeded/python.exe'
+          comfyuiDir: 'D:/ComfyUI'
+          pythonPath: 'D:/ComfyUI/python_embeded/python.exe'
           host: '127.0.0.1'
           port: 8188
           autoStart: false
         # ── 千问本地出图（原 dsh-qwen-paint）────────────────────────────
         qwenPaint:
           comfyUrl: 'http://127.0.0.1:8188'
-          comfyPython: 'D:\dsh-video\a\python_embeded\python.exe'
-          comfyMainPy: 'D:\dsh-video\a\ComfyUI\main.py'
-          comfyWorkdir: 'D:\dsh-video\a'
+          comfyPython: 'D:/ComfyUI/python_embeded/python.exe'
+          comfyMainPy: 'D:/ComfyUI/main.py'
+          comfyWorkdir: 'D:/ComfyUI'
           accelAutoInstall: false
           timeoutMs: 300000
           resolution: 1024
-          # 主模型：turbo 蒸馏版 GGUF（作者环境实测）。自带蒸馏，所以不再叠 turbo8 LoRA。
-          unet: 'Qwen-Image-2.1-Turbo-AD-Q6_K.gguf'
-          turboBakedModel: true
-          # GGUF 加载：advanced + target 反量化 —— 实测 37.6 s（default/fp32 要 155 s）
+          # 主模型：**完整版（非蒸馏）** int8 —— 2026-11-24 起本包的默认工作点。
+          # 旧默认是 turbo 蒸馏 GGUF（Qwen-Image-2.1-Turbo-AD-Q6_K.gguf）；那是另一条链路：
+          # 写 turboBakedModel: true 会把主模型按 9 步 / CFG 1 跑，完整版那样跑会严重欠采样（糊）。
+          unet: 'qwen_image_2.1_int8_convrot.safetensors'
+          turboBakedModel: false
+          # turbo 8/9 步蒸馏链：默认部署里没有 Qwen 的 turbo LoRA，显式关掉最稳。
+          # 你的部署里确有 turbo8 LoRA、想用 8 步加速，把这行删掉（默认 true = 自动探测）。
+          turbo8Enabled: false
+          # GGUF 加载：advanced + target 反量化 —— 实测 37.6 s（default/fp32 要 155 s）。
+          # 用 safetensors 时这几项不生效，留着是为了换 GGUF 主模型时不用再查一遍。
           ggufLoader: advanced
           ggufDequantDtype: target
           ggufPatchDtype: target
           ggufPatchOnDevice: true
-          # 采样引擎：turbo9 = 9 步显式 sigma 表（2026-11-12 起默认，借鉴 9 步整合画布）；
+          # 采样引擎：turbo9 = 9 步显式 sigma 表（只在 turbo 链路上生效）；
           # ksimple = 老链路（KSampler + scheduler:simple + ModelSamplingFlux），留作对照。
           samplingProfile: turbo9
           # 想试别的步序就填一串 sigma（逗号分隔、最后一位必须 0），留空用内置 9 步表。
@@ -48,8 +59,12 @@
           manualSigmasSampler: euler
           # 扩图成图长边上限（实际取 max(它, 原图 1.5 倍)；超了只收敛留白，不缩原图）。
           outpaintMaxEdge: 2048
-          steps: 8
-          forceTurbo8Steps: true
+          # 完整版的采样工作点：25 步 / CFG 3（千问原生档）。
+          # forceTurbo8Steps 的 8 步锁只对 turbo 链路有意义；关掉它，draw_image 的 steps 才真正生效。
+          steps: 25
+          baseSteps: 25
+          baseCfg: 3
+          forceTurbo8Steps: false
           forceOptimizedSize: false
           imageBackend: 'comfyui'
           hipfireExe: ''

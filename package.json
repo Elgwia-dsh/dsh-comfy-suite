@@ -1,8 +1,8 @@
 {
   "name": "dsh-comfy-suite",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "type": "module",
-  "description": "ComfyUI 一站式套件：工作流库（图工作流提取 / 加载区 / 技能包）+ 本地出图修图（draw / inpaint / outpaint / character / upscale，9 步 turbo9）+ 服务启停 + 作品库/风格库/提示词衣柜，14 个工具一个设置页；面板标题栏带实时进度条（WebSocket 驱动：正在生成 / 步数 / ETA / 队列深度）。",
+  "description": "ComfyUI 一站式套件：工作流库（图工作流提取 / 加载区 / 技能包）+ 本地出图修图（draw / inpaint / outpaint / character / upscale，采样档位可配：原生 25 步 / turbo 9 步）+ 服务启停 + 作品库/风格库/提示词衣柜，14 个工具一个设置页；面板标题栏带实时进度条（WebSocket 驱动：正在生成 / 步数 / ETA / 队列深度）。",
   "keywords": [
     "deepseek",
     "harness",

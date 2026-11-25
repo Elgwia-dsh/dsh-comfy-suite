@@ -8,7 +8,7 @@
  *   · 原生链路（没有 turbo LoRA）不会被 9 步表污染
  */
 import assert from 'node:assert/strict'
-import { DEFAULTS, FULL_CAPS, buildWorkflow, manualSigmasString, pickWrapperSet, TURBO9_SIGMAS } from './vendor/qwen-paint/lib/config.js'
+import { DEFAULTS, FULL_CAPS, PARAMETERS, buildWorkflow, drawParameters, manualSigmasString, pickWrapperSet, TURBO9_SIGMAS } from './vendor/qwen-paint/lib/config.js'
 
 const cfg = () => ({ ...DEFAULTS })
 const cases = []
@@ -200,6 +200,35 @@ test('非蒸馏模型在 basic 档仍走原生 25 步 / cfg 2.5（行为不变�
     assert.ok(!types.includes('ManualSigmas'))
     assert.equal(w[8].inputs.steps, DEFAULTS.baseSteps)
     assert.equal(w[8].inputs.cfg, DEFAULTS.baseCfg)
+})
+
+/* ------------------------------------------- draw_image 参数说明跟着链路走 ---- */
+// 2026-11-25：主模型换成完整版 int8 后，写死的旧文案还在说
+// "steps 会被忽略、强制 8 步""负面词基本不生效"，模型照做就白白放弃两个旋钮。
+// 断言的是"说明里的链路事实与配置一致"，不是文案措辞。
+test('draw_image 的 steps 说明随 forceTurbo8Steps 反转', () => {
+    const locked = drawParameters({ baseSteps: 25, baseCfg: 3, forceTurbo8Steps: true })
+    assert.match(locked.properties.steps.description, /会被忽略/)
+    const open = drawParameters({ baseSteps: 25, baseCfg: 3, forceTurbo8Steps: false })
+    assert.doesNotMatch(open.properties.steps.description, /会被忽略/)
+    assert.match(open.properties.steps.description, /都生效/)
+    assert.match(open.properties.steps.description, /25 步/, '原生链路默认步数要写进说明')
+})
+
+test('draw_image 的 negative 说明写明当前 CFG（原生链路的负面词有效）', () => {
+    const params = drawParameters({ baseSteps: 25, baseCfg: 3 })
+    assert.match(params.properties.negative.description, /CFG=3/)
+    assert.match(params.properties.negative.description, /负面词有用/)
+})
+
+test('drawParameters 不改动原参数表，schema 形状保持一致', () => {
+    assert.notEqual(PARAMETERS.properties.steps.description, drawParameters({ forceTurbo8Steps: false }).properties.steps.description)
+    assert.deepEqual(PARAMETERS.required, ['prompt'])
+    const params = drawParameters({})
+    assert.equal(params.additionalProperties, false)
+    assert.deepEqual(params.required, ['prompt'])
+    assert.deepEqual(Object.keys(params.properties).sort(), Object.keys(PARAMETERS.properties).sort())
+    assert.equal(params.properties.steps.type, 'integer')
 })
 
 const failed = cases.filter((line) => line.includes('FAIL')).length

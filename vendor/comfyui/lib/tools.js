@@ -46,6 +46,116 @@ function jobOwner(jobs, agent) {
     const id = typeof agent === 'object' && agent !== null ? agent.id : undefined;
     return typeof id === 'string' && id !== '' ? { owner: id } : {};
 }
+/**
+ * Top-level folder counts for the ComfyUI-side graph list.
+ *
+ * A library of a few hundred UI graphs in nested folders cannot be read line by
+ * line, and `limit` truncation then hides the folder the user actually means.
+ * One count per top-level folder gives the model a stable `filter` prefix to
+ * narrow with — cheaper than raising `limit` and more accurate than guessing.
+ *
+ * Pure and exported so the shape can be regression-tested without a runtime.
+ */
+export function workflowFolders(entries) {
+    const folders = new Map();
+    for (const entry of entries ?? []) {
+        const path = String(entry?.file ?? entry?.name ?? '');
+        const cut = path.search(/[\\/]/u);
+        const top = cut > 0 ? path.slice(0, cut) : '(根目录)';
+        folders.set(top, (folders.get(top) ?? 0) + 1);
+    }
+    return [...folders].map(([folder, count]) => ({ folder, count }));
+}
+/**
+ * The text one `action: list` result renders to.
+ *
+ * Extracted from the tool definition so the presentation is testable without a
+ * live runtime: the listing is what the model actually reads, and two bugs
+ * lived here (a filter that still announced the whole library, and no way to
+ * see which folder to narrow to). Pure: takes the execute() result object.
+ */
+export function renderWorkflowList(data) {
+    const lines = [];
+    const env = data.env;
+    if (env !== undefined) {
+        // The model's local-env one-liner: the ComfyUI server address and
+        // the user's ComfyUI install dirs, so it never has to ask where
+        // files live (TTS-Audio-Suite voice library etc.).
+        lines.push(`ComfyUI 服务器: ${env.baseUrl}；本机 ComfyUI 目录: ${env.comfyuiDirs.length > 0 ? env.comfyuiDirs.join('；') : '未配置（设置页 comfyuiDirs 可填写）'}`);
+    }
+    lines.push(`Saved ComfyUI workflows (${data.workflows?.length ?? 0}):`);
+    for (const workflow of data.workflows ?? []) {
+        lines.push(`- ${workflow.id} — ${workflow.name}${workflow.description !== '' ? `: ${workflow.description}` : ''}`);
+        // A workflow saved on another machine (or before models were
+        // renamed) still looks perfectly normal here; ComfyUI only
+        // rejects it at submit time. Say it now, with the node and
+        // value, so the model does not burn a run on it.
+        const preflight = workflow.preflight;
+        if (Array.isArray(preflight) && preflight.length > 0) {
+            lines.push(`  ⚠ 预检：这个工作流现在大概跑不起来 — ${preflight.slice(0, 3).join('；')}`);
+        }
+        const skill = workflow.skill;
+        if (skill !== undefined) {
+            const extra = skill.files > 1 ? `，另有 ${skill.files - 1} 篇参考文档` : '';
+            lines.push(`  技能包${skill.required ? '（运行前必读）' : ''}: ${skill.summary}${extra} — 运行前先 action: skill { id: "${workflow.id}" }`);
+        }
+        // Prompt parameters carry the user's request, so they are marked to
+        // be filled from it and their saved default is not printed (a
+        // default shown here gets rerun verbatim); every other parameter
+        // is listed with its default.
+        const params = workflow.parameters ?? [];
+        if (params.length > 0)
+            lines.push('  参数（键名用括号前的英文名；未传的参数使用默认值）:');
+        for (const param of params) {
+            const prompt = promptRole(param) === 'write';
+            const label = param.label ?? param.name;
+            const def = prompt || param.default === undefined ? '' : `，默认 ${typeof param.default === 'string' ? `"${param.default}"` : String(param.default)}`;
+            const options = Array.isArray(param.options) && param.options.length > 0 ? `，可选: ${param.options.join(' / ')}` : '';
+            const upload = param.upload !== undefined
+                ? `，上传类型: ${param.upload}${param.upload === 'media' ? `（${param.subfolder ?? ''}/，空值=移除该参考位）` : ''}`
+                : '';
+            const fill = prompt ? ' — 按用户需求填写，未明确时据需求自行发挥' : '';
+            lines.push(`  ${param.name}(${label}${param.random === true ? '，随机' : ''}${def}${options}${upload})${fill}`);
+        }
+    }
+    const loadArea = data.loadArea;
+    if (loadArea !== undefined && loadArea.slots > 0) {
+        lines.push(`用户加载区（${loadArea.slots} 个加载位，已放入 ${loadArea.loaded} 个素材，未显式传值的加载参数按顺序取用）:`);
+        for (const [index, item] of loadArea.items.entries()) {
+            lines.push(`  ${index + 1}. ${item.name}（${item.kind}）`);
+        }
+    }
+    const comfyui = data.comfyuiWorkflows ?? [];
+    if (comfyui.length > 0) {
+        const totalGraphs = data.comfyuiTotal ?? comfyui.length;
+        const matchedGraphs = data.comfyuiMatched ?? comfyui.length;
+        // 有 filter/onlyExtracted 时，命中的条数和全库条数不是一回事：
+        // 只报全库会让人以为"还剩一百多个没看"，其实过滤后只剩几十个。
+        const scope = matchedGraphs < totalGraphs
+            ? `全库 ${totalGraphs} 个，命中 ${matchedGraphs} 个`
+            : `共 ${totalGraphs} 个`;
+        lines.push(`ComfyUI 端保存的图工作流（${scope}，列出 ${comfyui.length} 个，UI 图格式，不能直接运行）:`);
+        // 目录分布：图库大了以后逐条扫不现实，先给出去重后的目录与条数，
+        // 模型据此挑一个 filter（目录名是稳定前缀），比反复加大 limit 省 token。
+        const folders = data.comfyuiFolders ?? [];
+        if (folders.length > 0) {
+            lines.push(`  目录：${folders.map((entry) => `${entry.folder} ${entry.count}`).join('｜')}`
+                + `（按目录收窄：filter: "${folders[0].folder}"）`);
+        }
+        for (const workflow of comfyui) {
+            if (workflow.extracted) {
+                lines.push(`- ${workflow.name} — 已提取 ${workflow.derived.length} 个运行工作流：${workflow.derived.map((d) => `${d.name}(${d.libraryId})`).join('、')}`);
+            }
+            else {
+                lines.push(`- ${workflow.name} — 未提取，可直接 action: extract { file: "${workflow.file ?? workflow.name}" }`);
+            }
+        }
+        if (matchedGraphs > comfyui.length) {
+            lines.push(`（另有 ${matchedGraphs - comfyui.length} 个没显示：用 filter 缩小范围，或用 limit 调大条数）`);
+        }
+    }
+    return lines.join('\n');
+}
 /** A completed job: `text` is what the model's next job_output receives. */
 function jobCompleted(jobs, text) {
     return sessionJobs(jobs) ? { status: 'completed', result: text } : { status: 'completed', output: text };
@@ -622,74 +732,7 @@ function workflowDefinition(runtime, ctx) {
                     return [{ type: 'text', text: `ComfyUI workflow ${data.name ?? data.id}：参数快照已刷新（${data.parameterCount ?? 0} 个参数原样保留），${changedText}` }];
                 }
                 if (data.action === 'list') {
-                    const lines = [];
-                    const env = data.env;
-                    if (env !== undefined) {
-                        // The model's local-env one-liner: the ComfyUI server address and
-                        // the user's ComfyUI install dirs, so it never has to ask where
-                        // files live (TTS-Audio-Suite voice library etc.).
-                        lines.push(`ComfyUI 服务器: ${env.baseUrl}；本机 ComfyUI 目录: ${env.comfyuiDirs.length > 0 ? env.comfyuiDirs.join('；') : '未配置（设置页 comfyuiDirs 可填写）'}`);
-                    }
-                    lines.push(`Saved ComfyUI workflows (${data.workflows?.length ?? 0}):`);
-                    for (const workflow of data.workflows ?? []) {
-                        lines.push(`- ${workflow.id} — ${workflow.name}${workflow.description !== '' ? `: ${workflow.description}` : ''}`);
-                        // A workflow saved on another machine (or before models were
-                        // renamed) still looks perfectly normal here; ComfyUI only
-                        // rejects it at submit time. Say it now, with the node and
-                        // value, so the model does not burn a run on it.
-                        const preflight = workflow.preflight;
-                        if (Array.isArray(preflight) && preflight.length > 0) {
-                            lines.push(`  ⚠ 预检：这个工作流现在大概跑不起来 — ${preflight.slice(0, 3).join('；')}`);
-                        }
-                        const skill = workflow.skill;
-                        if (skill !== undefined) {
-                            const extra = skill.files > 1 ? `，另有 ${skill.files - 1} 篇参考文档` : '';
-                            lines.push(`  技能包${skill.required ? '（运行前必读）' : ''}: ${skill.summary}${extra} — 运行前先 action: skill { id: "${workflow.id}" }`);
-                        }
-                        // Prompt parameters carry the user's request, so they are marked to
-                        // be filled from it and their saved default is not printed (a
-                        // default shown here gets rerun verbatim); every other parameter
-                        // is listed with its default.
-                        const params = workflow.parameters ?? [];
-                        if (params.length > 0)
-                            lines.push('  参数（键名用括号前的英文名；未传的参数使用默认值）:');
-                        for (const param of params) {
-                            const prompt = promptRole(param) === 'write';
-                            const label = param.label ?? param.name;
-                            const def = prompt || param.default === undefined ? '' : `，默认 ${typeof param.default === 'string' ? `"${param.default}"` : String(param.default)}`;
-                            const options = Array.isArray(param.options) && param.options.length > 0 ? `，可选: ${param.options.join(' / ')}` : '';
-                            const upload = param.upload !== undefined
-                                ? `，上传类型: ${param.upload}${param.upload === 'media' ? `（${param.subfolder ?? ''}/，空值=移除该参考位）` : ''}`
-                                : '';
-                            const fill = prompt ? ' — 按用户需求填写，未明确时据需求自行发挥' : '';
-                            lines.push(`  ${param.name}(${label}${param.random === true ? '，随机' : ''}${def}${options}${upload})${fill}`);
-                        }
-                    }
-                    const loadArea = data.loadArea;
-                    if (loadArea !== undefined && loadArea.slots > 0) {
-                        lines.push(`用户加载区（${loadArea.slots} 个加载位，已放入 ${loadArea.loaded} 个素材，未显式传值的加载参数按顺序取用）:`);
-                        for (const [index, item] of loadArea.items.entries()) {
-                            lines.push(`  ${index + 1}. ${item.name}（${item.kind}）`);
-                        }
-                    }
-                    const comfyui = data.comfyuiWorkflows ?? [];
-                    if (comfyui.length > 0) {
-                        const totalGraphs = data.comfyuiTotal ?? comfyui.length;
-                        const matchedGraphs = data.comfyuiMatched ?? comfyui.length;
-                        lines.push(`ComfyUI 端保存的图工作流（共 ${totalGraphs} 个，列出 ${comfyui.length} 个，UI 图格式，不能直接运行）:`);
-                        for (const workflow of comfyui) {
-                            if (workflow.extracted) {
-                                lines.push(`- ${workflow.name} — 已提取 ${workflow.derived.length} 个运行工作流：${workflow.derived.map((d) => `${d.name}(${d.libraryId})`).join('、')}`);
-                            }
-                            else {
-                                lines.push(`- ${workflow.name} — 未提取，可直接 action: extract { file: "${workflow.file ?? workflow.name}" }`);
-                            }
-                        }
-                        if (matchedGraphs > comfyui.length) {
-                            lines.push(`（另有 ${matchedGraphs - comfyui.length} 个没显示：用 filter 缩小范围，或用 limit 调大条数）`);
-                        }
-                    }
-                    return [{ type: 'text', text: lines.join('\n') }];
+                    return [{ type: 'text', text: renderWorkflowList(data) }];
                 }
                 if (data.action === 'extract') {
                     const savedNew = data.saved ?? [];
@@ -777,6 +820,11 @@ function workflowDefinition(runtime, ctx) {
                     && (!onlyExtracted || entry.extracted === true));
                 const listLimit = Number.isFinite(args.limit) ? Math.max(1, Math.min(500, Math.floor(args.limit))) : 40;
                 const shownComfy = matchedComfy.slice(0, listLimit);
+                // Folder rollup: a library with hundreds of graphs in nested folders
+                // cannot be scanned line by line, and `limit` truncation then hides
+                // the very folder the user means. One count per top-level folder
+                // tells the model exactly which `filter` value narrows the list.
+                const folders = workflowFolders(matchedComfy);
                 return {
                     action: 'list',
                     // Local environment the model can rely on: the ComfyUI server
@@ -825,6 +873,7 @@ function workflowDefinition(runtime, ctx) {
                     comfyuiWorkflows: shownComfy.map(({ name, file, extracted, derived }) => ({ name, file: file ?? name, extracted, derived })),
                     comfyuiTotal: comfyui.length,
                     comfyuiMatched: matchedComfy.length,
+                    ...(folders.length > 1 ? { comfyuiFolders: folders } : {}),
                 };
             }
             if (action === 'upload') {
