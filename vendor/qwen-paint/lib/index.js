@@ -3916,6 +3916,19 @@ export function apply(root, rawConfig) {
                 + ` url=${cfg.comfyUrl}\n`
               const statusPath = statusLogPath(cfg)
               await fsp.mkdir(path.dirname(statusPath), { recursive: true }).catch(() => { })
+              // ★ 2026-11-25：这个文件按「状态变化 / 每 60 秒」追加，但**一直没有上限** ——
+              //   长时间挂机它会长到几 MB（实测两天 1.1 MB），诊断信息被稀释、备份也跟着变大。
+              //   超过 512 KB 只留最后 300 行再追加，与 boot.log 的轮转同一口径。
+              try {
+                const info = await fsp.stat(statusPath)
+                if (info.size > 512 * 1024) {
+                  const text = await fsp.readFile(statusPath, 'utf8')
+                  const kept = text.split('\n').filter(Boolean).slice(-300)
+                  await fsp.writeFile(statusPath, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8')
+                }
+              } catch {
+                /* 文件还不存在/读不了：直接追加 */
+              }
               await fsp.appendFile(statusPath, line, 'utf8')
             }
           } catch {
